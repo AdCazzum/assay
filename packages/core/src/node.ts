@@ -29,7 +29,7 @@ import {
   type SettlementPolicyConfig,
 } from './settlement-policy.js';
 import type { CapabilityRegistry } from './runtime.js';
-import type { Job, JobStatus, Manifest, ProviderRecord, Verdict } from './types.js';
+import type { Job, JobStatus, Manifest, ProviderRecord, Reputation, Verdict } from './types.js';
 
 /**
  * Thrown by `serve()` when `payments.confirm(txId)` does not return `true`.
@@ -172,6 +172,92 @@ export class ReputationUpdateFailedError extends Error {
   }
 }
 
+/**
+ * Thrown by `register()` when `payments.postBond()` already succeeded (real
+ * HBAR left the operator account, `bondRef`/`bondTxId` are real) but the
+ * follow-up `registry.publishManifest()` then failed. SPEC.md §9: the two
+ * networks are not one atomic transaction, so this names the honest
+ * in-between state plainly rather than swallowing it — the provider is
+ * **bonded but unlisted**.
+ *
+ * The bond already happened for real, so **do not call `register()` again**:
+ * that would post a *second*, redundant bond for the same provider. Instead,
+ * once whatever ENS failure caused this is fixed, retry by calling
+ * `registry.publishManifest(name, manifest)` directly with this error's own
+ * `manifest` (it already carries the real `bondRef` this bond produced), then
+ * `registry.updateReputation(name, { bondHbar })` to finish the
+ * reputation-init step `register()` never got to.
+ */
+export class ManifestPublishFailedError extends Error {
+  readonly providerName: string;
+  readonly bondRef: string;
+  readonly bondTxId: string;
+  readonly manifest: Manifest;
+  override readonly cause?: unknown;
+
+  constructor(providerName: string, bondRef: string, bondTxId: string, manifest: Manifest, cause: unknown) {
+    super(
+      `register("${providerName}") posted a real bond (bondRef "${bondRef}", tx "${bondTxId}") but the ` +
+        `ENS manifest publish then failed: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }. The bond already happened; do not call register() again (it would post a second bond) -- ` +
+        `retry registry.publishManifest() directly with this error's "manifest" (it already carries the ` +
+        'real bondRef), then registry.updateReputation() to finish reputation init.',
+    );
+    this.name = 'ManifestPublishFailedError';
+    this.providerName = providerName;
+    this.bondRef = bondRef;
+    this.bondTxId = bondTxId;
+    this.manifest = manifest;
+    this.cause = cause;
+  }
+}
+
+/**
+ * Thrown by `register()` when the bond posted and the manifest published
+ * (both real, both durable) but the reputation-initialization write then
+ * failed. SPEC.md §9's "not atomic across networks" made concrete again: the
+ * provider is now **listed but not yet discoverable** — `resolveProvider()`
+ * requires `assay:rep` to exist (`MissingRecordError`), and this is the one
+ * write that creates it, so `discover()`/`payAndCall()` against this name
+ * will fail until it lands.
+ *
+ * Same recovery rule as `ManifestPublishFailedError`: do not call
+ * `register()` again (it would post a second bond). Retry
+ * `registry.updateReputation(name, { bondHbar })` directly once the
+ * underlying ENS failure is fixed.
+ */
+export class ReputationInitFailedError extends Error {
+  readonly providerName: string;
+  readonly manifestTxHash: string;
+  readonly bondRef: string;
+  readonly bondTxId: string;
+  override readonly cause?: unknown;
+
+  constructor(
+    providerName: string,
+    manifestTxHash: string,
+    bondRef: string,
+    bondTxId: string,
+    cause: unknown,
+  ) {
+    super(
+      `register("${providerName}") posted the bond (bondRef "${bondRef}", tx "${bondTxId}") and published ` +
+        `the manifest (tx "${manifestTxHash}") but the reputation-initialization write then failed: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }. The provider is listed but not yet discoverable (resolveProvider() requires assay:rep to ` +
+        'exist) -- do not call register() again (it would post a second bond); retry ' +
+        'registry.updateReputation(name, { bondHbar }) directly.',
+    );
+    this.name = 'ReputationInitFailedError';
+    this.providerName = providerName;
+    this.manifestTxHash = manifestTxHash;
+    this.bondRef = bondRef;
+    this.bondTxId = bondTxId;
+    this.cause = cause;
+  }
+}
+
 export type AssayNodeConfig = {
   registry: RegistryPort;
   payments: PaymentsPort;
@@ -215,19 +301,55 @@ export type AssayNodeConfig = {
    * `DEFAULT_SETTLEMENT_POLICY`.
    */
   settlementPolicy?: SettlementPolicyConfig;
+  /**
+   * Observability hook for `register()` (SPEC.md §7 step 1), the slowest
+   * step in the demo (a real ~4s Hedera bond, then a real ~12.5s ENS
+   * manifest write, then a real ~12.5s ENS reputation write, back to back).
+   * Follows the same precedent already set for the other two slow legs
+   * rather than inventing a third shape: `@assay/payments`'s
+   * `onConfirmAttempt` and `@assay/registry`'s `onReputationWriteAttempt`
+   * are both bound once at adapter-construction time and both report
+   * progress ticks, not just a final result. This hook is the core-level
+   * equivalent, bound once per node, reporting `register()`'s own
+   * phase-to-phase progress (see `RegisterProgress`) so the dashboard can
+   * narrate which of the three real transactions is currently in flight.
+   */
+  onRegisterProgress?: (info: RegisterProgress) => void;
 };
 
 export type RegisterInput = {
   name: string;
-  manifest: Manifest;
+  /**
+   * Every manifest field except `bondRef`. `bondRef` is deliberately not
+   * accepted here: `register()` fills it in from the real
+   * `payments.postBond()` result, because the bond must be posted *before*
+   * the manifest is written (see `register()`'s doc comment on `AssayNode`
+   * for why the ordering is forced, not a style choice).
+   */
+  manifest: Omit<Manifest, 'bondRef'>;
   bondHbar: number;
 };
 
 export type RegisterResult = {
-  manifestTxHash: string;
   bondRef: string;
   bondTxId: string;
+  manifestTxHash: string;
+  reputationTxHash: string;
+  /** The reputation record as written: `{ score: 0, jobs: 0, slashes: 0 }` on a name's first-ever registration (matching `assessment.ts`'s "unproven" 0-job baseline), or the prior score/jobs/slashes carried over with `bondHbar` updated to this call's real bond, on a re-registration. See `register()`'s doc comment. */
+  reputation: Reputation;
 };
+
+/**
+ * Progress ticks `register()` reports through `AssayNodeConfig.onRegisterProgress`,
+ * one per phase boundary (not per underlying network attempt — those are the
+ * adapters' own `onConfirmAttempt`/`onReputationWriteAttempt`). `elapsedMs`
+ * is measured from the start of this `register()` call.
+ */
+export type RegisterProgress =
+  | { phase: 'posting-bond'; elapsedMs: number }
+  | { phase: 'publishing-manifest'; elapsedMs: number; bondRef: string; bondTxId: string }
+  | { phase: 'initializing-reputation'; elapsedMs: number; bondRef: string; manifestTxHash: string }
+  | { phase: 'done'; elapsedMs: number; result: RegisterResult };
 
 export type ServeInput = {
   provider: string;
@@ -244,11 +366,59 @@ export type PayAndCallResult = {
 
 export interface AssayNode {
   /**
-   * Publishes the manifest and posts the bond (SPEC.md §7 step 1). Reputation
-   * initialization is deliberately out of scope here: the real registry's
-   * `updateReputation` is an explicit stub (#16), not a working write yet, so
-   * calling it from `register()` would make this function fail against the
-   * live adapter today. That wiring belongs to whoever closes #16/#17.
+   * Provider registration end to end (SPEC.md §7 step 1): posts the bond,
+   * publishes the manifest, and initializes reputation. Three real network
+   * calls, strictly sequential, never parallel:
+   *
+   *   1. `payments.postBond(bondHbar)` — a real Hedera transfer (~4s settle).
+   *   2. `registry.publishManifest(name, { ...manifest, bondRef })` — a real
+   *      ENS text-record write (~12.5s).
+   *   3. `registry.updateReputation(name, { bondHbar })` — another real ENS
+   *      write (~12.5s), which either initializes `assay:rep` from zero (a
+   *      name registered for the first time) or merges onto whatever
+   *      reputation the name already had (see `RegisterResult.reputation`).
+   *
+   * **Ordering is forced, not a style choice.** The manifest's `bondRef` must
+   * be the *real* reference the bond transaction returned (SPEC.md §5:
+   * `assay:manifest`'s `bondRef` is not a placeholder a caller invents), so
+   * the bond has to land before the manifest is written — there is no way to
+   * publish a manifest with a real `bondRef` before the bond that produces it
+   * exists. The consequence: a caller cannot retry `register()` itself after
+   * a partial failure without risking a *second* real bond (see below).
+   *
+   * **Not atomic across networks** (SPEC.md §9: orchestration is explicitly
+   * off-chain here, and this function is honest about that rather than
+   * pretending otherwise):
+   *
+   *   - If `postBond` fails, nothing else has happened: no manifest, no
+   *     reputation write. Safe to retry `register()` from scratch.
+   *   - If `postBond` succeeds but `publishManifest` then fails, the
+   *     provider is **bonded but unlisted** — real HBAR is committed with
+   *     nowhere on ENS pointing at it yet. Rejects with
+   *     `ManifestPublishFailedError`, which carries the real `bondRef`/
+   *     `bondTxId`/`manifest` so the caller can retry the manifest publish
+   *     directly instead of calling `register()` again (which would post a
+   *     second, redundant bond).
+   *   - If `postBond` and `publishManifest` both succeed but
+   *     `updateReputation` then fails, the provider is **listed but not yet
+   *     discoverable**: `discover()`/`payAndCall()` both call
+   *     `registry.resolveProvider()`, which requires `assay:rep` to exist
+   *     and throws otherwise. Rejects with `ReputationInitFailedError`,
+   *     which carries enough state (`bondRef`, `bondTxId`, `manifestTxHash`)
+   *     to retry just the reputation write directly.
+   *
+   * **Re-registering an already-registered name** is allowed and posts a
+   * fresh bond, republishes the manifest (overwriting the old one, including
+   * its `bondRef`), and re-runs `updateReputation({ bondHbar })` — which
+   * *merges* onto the existing reputation, so `score`/`jobs`/`slashes`
+   * survive a re-registration (a provider's history is not erased just
+   * because it re-registered); only `bondHbar` is guaranteed to change, to
+   * reflect the bond this call actually posted.
+   *
+   * Progress is reported through `AssayNodeConfig.onRegisterProgress` at each
+   * phase boundary (see `RegisterProgress`): this is the slowest step in the
+   * whole loop (~4s + ~12.5s + ~12.5s back to back), so the dashboard needs
+   * something to narrate while it runs.
    */
   register(input: RegisterInput): Promise<RegisterResult>;
   /** Resolves `name` on the registry: manifest + reputation, for a requester to reason over before paying. */
@@ -458,9 +628,49 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
 
   return {
     async register({ name, manifest, bondHbar }) {
-      const { txHash: manifestTxHash } = await registry.publishManifest(name, manifest);
+      const start = Date.now();
+      const onProgress = config.onRegisterProgress;
+      const elapsed = () => Date.now() - start;
+
+      // 1. Bond first: SPEC.md §5's `assay:manifest.bondRef` must be the real
+      // reference this transaction returns, so nothing can be published
+      // before it exists.
+      onProgress?.({ phase: 'posting-bond', elapsedMs: elapsed() });
       const { bondRef, txId: bondTxId } = await payments.postBond(bondHbar);
-      return { manifestTxHash, bondRef, bondTxId };
+
+      const fullManifest: Manifest = { ...manifest, bondRef };
+
+      // 2. Manifest, now carrying the real bondRef. If this fails, the bond
+      // already happened for real -- surface that as ManifestPublishFailedError
+      // rather than letting the caller believe a retry of register() is free.
+      onProgress?.({ phase: 'publishing-manifest', elapsedMs: elapsed(), bondRef, bondTxId });
+      let manifestTxHash: string;
+      try {
+        ({ txHash: manifestTxHash } = await registry.publishManifest(name, fullManifest));
+      } catch (cause) {
+        throw new ManifestPublishFailedError(name, bondRef, bondTxId, fullManifest, cause);
+      }
+
+      // 3. Reputation init, last: without this write `resolveProvider()`
+      // (and therefore discover()/payAndCall()) cannot resolve `name` at
+      // all (MissingRecordError on `assay:rep`). `{ bondHbar }` is the whole
+      // delta -- on a first-ever registration `updateReputation` merges it
+      // onto the zero reputation every RegistryPort implementation already
+      // treats an unset assay:rep as (matching assessment.ts's "unproven"
+      // 0-job baseline); on a re-registration it merges onto whatever
+      // score/jobs/slashes the name already carries, so history survives.
+      onProgress?.({ phase: 'initializing-reputation', elapsedMs: elapsed(), bondRef, manifestTxHash });
+      let reputationTxHash: string;
+      let reputation: Reputation;
+      try {
+        ({ txHash: reputationTxHash, reputation } = await registry.updateReputation(name, { bondHbar }));
+      } catch (cause) {
+        throw new ReputationInitFailedError(name, manifestTxHash, bondRef, bondTxId, cause);
+      }
+
+      const result: RegisterResult = { bondRef, bondTxId, manifestTxHash, reputationTxHash, reputation };
+      onProgress?.({ phase: 'done', elapsedMs: elapsed(), result });
+      return result;
     },
 
     async discover(name) {
