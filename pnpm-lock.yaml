@@ -28,9 +28,21 @@ importers:
 
   apps/mcp:
     dependencies:
+      '@assay/cap-rugscore':
+        specifier: workspace:*
+        version: link:../../packages/cap-rugscore
       '@assay/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@assay/graph':
+        specifier: workspace:*
+        version: link:../../packages/graph
+      '@assay/payments':
+        specifier: workspace:*
+        version: link:../../packages/payments
+      '@assay/registry':
+        specifier: workspace:*
+        version: link:../../packages/registry
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@3.25.76)

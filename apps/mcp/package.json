@@ -13,7 +13,11 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@assay/cap-rugscore": "workspace:*",
     "@assay/core": "workspace:*",
+    "@assay/graph": "workspace:*",
+    "@assay/payments": "workspace:*",
+    "@assay/registry": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^3.25.76"
   }

@@ -22,6 +22,14 @@ const inputSchema = {
  * accounts for the job as done. Reputation stays evidence-based (SPEC.md §3):
  * this records completion, not a subjective star rating, so use `challenge`
  * instead whenever a specific claim looks objectively false.
+ *
+ * Wired against the real node (issue #46), `rate` still fails with a clear,
+ * named error against a fresh checkout: `registry.updateReputation` (the ENS
+ * write this needs) is itself an explicit stub until #16 lands, the same
+ * "named error, not a fake result" posture `challenge` has for #26. See
+ * `live-node.ts`'s `rate` doc comment for exactly what else core still owes
+ * this tool (a job-store transition for an unchallenged job, which does not
+ * exist yet either).
  */
 export function registerRateTool(server: McpServer, node: AssayNodePort): void {
   server.registerTool(

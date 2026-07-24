@@ -8,8 +8,8 @@ const inputSchema = {
     .string()
     .min(1)
     .describe(
-      'The capability to look up, e.g. "rugscore". This is the ENS subname ' +
-        'under the Assay parent name (assay.eth on Sepolia), not a free-text query.',
+      'The provider to look up, as its full ENS name under the Assay parent name ' +
+        '(e.g. "rugscore.assay.eth" on Sepolia), not a bare label and not a free-text query.',
     ),
 };
 
@@ -19,6 +19,12 @@ const inputSchema = {
  * one piece of prose that most determines whether the agent's decision to pay
  * later is genuine reasoning or a coin flip, so it spells out exactly what is
  * and is not decided here.
+ *
+ * The result carries both the raw manifest/reputation *and* a structured
+ * assessment (issue #21's `assessProvider`, wired in for #46): each signal
+ * names its own severity (`info` / `caution` / `concern`) and is rendered
+ * generically here, never keyed off a hardcoded signal name, so this stays
+ * correct however `assessProvider`'s signal set evolves.
  */
 export function registerDiscoverTool(server: McpServer, node: AssayNodePort): void {
   server.registerTool(
@@ -26,14 +32,16 @@ export function registerDiscoverTool(server: McpServer, node: AssayNodePort): vo
     {
       title: 'Discover an Assay provider',
       description:
-        'Resolve a capability (e.g. "rugscore") to its provider over ENS and return two things: ' +
-        'the manifest (what it does, its price in HBAR per call, its endpoint, its posted bond) and ' +
-        'its on-chain reputation (score, number of jobs completed, number of times it has been ' +
-        'slashed for a proven-false claim, and its current bond in HBAR). This call is read-only: ' +
-        'it never pays and never invokes the provider. Deciding whether the price is justified by ' +
-        'the reputation is YOUR call, not this tool\'s: weigh the score against the price, treat a ' +
-        'low job count as low confidence even with a good score, and treat any past slash as a real ' +
-        'red flag, not noise. If the reputation does not justify the price, do not call pay_and_call.',
+        'Resolve a provider (by its full ENS name, e.g. "rugscore.assay.eth") and return: its ' +
+        'manifest (what it does, its price in HBAR per call, its endpoint, its posted bond), its ' +
+        'raw on-chain reputation (score, jobs completed, slashes, bond), and a structured ' +
+        'assessment of that reputation, i.e. a list of signals, each with a severity ' +
+        '(info/caution/concern) and a human-readable reason. This call is read-only: it never ' +
+        'pays and never invokes the provider. Deciding whether the price is justified is YOUR ' +
+        'call, not this tool\'s: read every signal, weigh a "concern" more heavily than a ' +
+        '"caution", and do not treat an unproven (0-job) provider as if it had a good record, it ' +
+        'is unscored, not vetted. If the reputation does not justify the price, do not call ' +
+        'pay_and_call.',
       inputSchema,
       annotations: {
         title: 'Discover an Assay provider',
@@ -43,17 +51,22 @@ export function registerDiscoverTool(server: McpServer, node: AssayNodePort): vo
     },
     async ({ capabilityId }) => {
       try {
-        const record = await node.discover(capabilityId);
-        const { manifest, reputation } = record;
+        const { provider, assessment } = await node.discover(capabilityId);
+        const { manifest, reputation } = provider;
+        const signalLines = assessment.signals
+          .map((signal) => `  [${signal.severity.toUpperCase()}] ${signal.key}: ${signal.detail}`)
+          .join('\n');
         const summary =
-          `Provider "${record.name}" for capability "${manifest.capabilityId}": ` +
+          `Provider "${provider.name}" for capability "${manifest.capabilityId}": ` +
           `${manifest.description}. Price: ${manifest.priceHbar} HBAR/call. ` +
           `Reputation: score ${reputation.score}, ${reputation.jobs} jobs completed, ` +
-          `${reputation.slashes} slashes, bond ${reputation.bondHbar} HBAR. ` +
-          'Weigh this before calling pay_and_call; nothing here pays automatically.';
+          `${reputation.slashes} slashes, bond ${reputation.bondHbar} HBAR.\n\n` +
+          `Assessment (reason over these, don't just skim the score):\n${signalLines}\n\n` +
+          'This is read-only; nothing here pays automatically. Decide for yourself whether the ' +
+          'price is justified before calling pay_and_call.';
         return {
           content: [{ type: 'text', text: summary }],
-          structuredContent: record as unknown as Record<string, unknown>,
+          structuredContent: { provider, assessment } as unknown as Record<string, unknown>,
         };
       } catch (err) {
         return toToolError(err);

@@ -10,7 +10,21 @@
  * need to change, because they only ever see `AssayNodePort`.
  */
 
-import type { Job, ProviderRecord } from '@assay/core';
+import type { Job, ProviderAssessment, ProviderRecord } from '@assay/core';
+
+/**
+ * What `discover` resolves with: the raw provider record (manifest +
+ * reputation, straight off ENS) *and* the structured risk read over it
+ * (issue #21's `assessProvider`, issue #46). SPEC.md §16 names "agentic must
+ * be real reasoning, not a hardcoded if" as a headline risk, so this
+ * deliberately hands back `assessment.signals` (each with a severity and a
+ * human-readable `detail`) rather than collapsing the read into a verdict:
+ * the calling agent is the one who decides whether the price is justified.
+ */
+export type DiscoverResult = {
+  provider: ProviderRecord;
+  assessment: ProviderAssessment;
+};
 
 /**
  * The requester-side operations an MCP client drives. Maps 1:1 to the four
@@ -19,12 +33,12 @@ import type { Job, ProviderRecord } from '@assay/core';
  */
 export interface AssayNodePort {
   /**
-   * Resolves a provider for `capabilityId` (e.g. `"rugscore"`) over ENS and
-   * returns its manifest (price, endpoint, bond) and its on-chain reputation
-   * (score, completed jobs, slashes). Read-only: never pays, never calls the
-   * provider.
+   * Resolves a provider for `capabilityId` (the ENS name registered under
+   * the Assay parent name, e.g. `"rugscore.assay.eth"`) and returns its
+   * manifest, reputation, and a structured assessment of both. Read-only:
+   * never pays, never calls the provider.
    */
-  discover(capabilityId: string): Promise<ProviderRecord>;
+  discover(capabilityId: string): Promise<DiscoverResult>;
 
   /**
    * Pays the provider's `priceHbar` on Hedera testnet with `request` bound
@@ -32,8 +46,15 @@ export interface AssayNodePort {
    * the provider run the capability. Resolves with the served job: the
    * result plus its block-stamped claims, `status: "served"`, optimistically
    * valid until challenged.
+   *
+   * By default this is gated by the node's pay/decline policy floor (issue
+   * #21) and rejects with `PayDeclinedError` (from `@assay/core`) without
+   * paying anything if the assessment trips it. Pass `force: true` to pay
+   * anyway, once the calling agent has read the decline's reasoning and
+   * judged it worth overriding; this still spends real testnet HBAR and
+   * still runs the capability for real, it just skips that one floor.
    */
-  payAndCall(capabilityId: string, request: unknown): Promise<Job>;
+  payAndCall(capabilityId: string, request: unknown, force?: boolean): Promise<Job>;
 
   /**
    * Challenges one claim of an already-served job. The verifier re-derives

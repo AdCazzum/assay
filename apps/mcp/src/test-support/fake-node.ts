@@ -1,5 +1,5 @@
-import type { Job, Manifest, ProviderRecord, Reputation } from '@assay/core';
-import type { AssayNodePort } from '../node-port.js';
+import { assessProvider, type Job, type Manifest, type ProviderRecord, type Reputation } from '@assay/core';
+import type { AssayNodePort, DiscoverResult } from '../node-port.js';
 
 /**
  * Test double for `AssayNodePort`. This is NOT `@assay/core`'s
@@ -11,7 +11,7 @@ import type { AssayNodePort } from '../node-port.js';
  */
 export class FakeAssayNode implements AssayNodePort {
   readonly discoverCalls: string[] = [];
-  readonly payAndCallCalls: Array<{ capabilityId: string; request: unknown }> = [];
+  readonly payAndCallCalls: Array<{ capabilityId: string; request: unknown; force?: boolean }> = [];
   readonly challengeCalls: Array<{ jobId: string; claimKey: string }> = [];
   readonly rateCalls: Array<{ jobId: string; satisfied: boolean; comment?: string }> = [];
 
@@ -27,18 +27,18 @@ export class FakeAssayNode implements AssayNodePort {
   /** If set, `rate` throws this instead of returning a job. */
   rateError?: Error;
 
-  async discover(capabilityId: string): Promise<ProviderRecord> {
+  async discover(capabilityId: string): Promise<DiscoverResult> {
     this.discoverCalls.push(capabilityId);
     if (this.discoverError) throw this.discoverError;
     const record = this.providerByCapability.get(capabilityId);
     if (!record) {
       throw new Error(`FakeAssayNode: no provider fixture registered for "${capabilityId}"`);
     }
-    return record;
+    return { provider: record, assessment: assessProvider(record) };
   }
 
-  async payAndCall(capabilityId: string, request: unknown): Promise<Job> {
-    this.payAndCallCalls.push({ capabilityId, request });
+  async payAndCall(capabilityId: string, request: unknown, force?: boolean): Promise<Job> {
+    this.payAndCallCalls.push({ capabilityId, request, force });
     if (this.payAndCallError) throw this.payAndCallError;
     const job = this.jobsById.get(`${capabilityId}:${String(request)}`);
     if (!job) {
@@ -87,6 +87,9 @@ export const FIXTURE_PROVIDER_RECORD: ProviderRecord = {
   manifest: FIXTURE_MANIFEST,
   reputation: FIXTURE_REPUTATION,
 };
+
+/** The real, pure `assessProvider` over `FIXTURE_PROVIDER_RECORD` — not hand-rolled, so it can't drift from what `assessProvider` actually does. */
+export const FIXTURE_ASSESSMENT = assessProvider(FIXTURE_PROVIDER_RECORD);
 
 export const FIXTURE_JOB: Job = {
   jobId: 'job-1',
