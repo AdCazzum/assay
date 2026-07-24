@@ -13,6 +13,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@assay/core": "workspace:*",
     "@hashgraph/sdk": "^2.81.0"
   }
 }

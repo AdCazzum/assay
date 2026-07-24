@@ -86,16 +86,26 @@ importers:
 
   packages/core: {}
 
-  packages/graph: {}
+  packages/graph:
+    dependencies:
+      '@assay/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/payments:
     dependencies:
+      '@assay/core':
+        specifier: workspace:*
+        version: link:../core
       '@hashgraph/sdk':
         specifier: ^2.81.0
         version: 2.81.0(bn.js@5.2.3)(react-native@0.86.0(@babel/core@7.29.7)(react@19.2.8))
 
   packages/registry:
     dependencies:
+      '@assay/core':
+        specifier: workspace:*
+        version: link:../core
       ethers:
         specifier: ^6.17.0
         version: 6.17.0
