@@ -90,6 +90,30 @@ describe('createEnsRegistry: resolveProvider', () => {
     await expect(registry.resolveProvider(NAME)).rejects.toThrow(MissingRecordError);
   });
 
+  // Regression: found by running the live smoke against Sepolia. ethers reports
+  // an unset text record as an empty string, not null, so a freshly registered
+  // provider (manifest written, reputation not yet initialised) reached the JSON
+  // decoder and was reported as having a *corrupt* record. Opposite diagnosis to
+  // the truth, on the exact path a requester hits first.
+  it('reports an empty reputation record as missing rather than malformed', async () => {
+    const gateway = new FakeEnsResolverGateway()
+      .seedText(NAME, MANIFEST_RECORD_KEY, JSON.stringify(manifest))
+      .seedText(NAME, REPUTATION_RECORD_KEY, '');
+    const registry = registryWith(gateway);
+
+    await expect(registry.resolveProvider(NAME)).rejects.toThrow(MissingRecordError);
+    await expect(registry.resolveProvider(NAME)).rejects.not.toThrow(/malformed/);
+  });
+
+  it('reports a whitespace-only manifest record as missing rather than malformed', async () => {
+    const gateway = new FakeEnsResolverGateway()
+      .seedText(NAME, MANIFEST_RECORD_KEY, '   ')
+      .seedText(NAME, REPUTATION_RECORD_KEY, encodeReputation(reputation));
+    const registry = registryWith(gateway);
+
+    await expect(registry.resolveProvider(NAME)).rejects.toThrow(MissingRecordError);
+  });
+
   it('throws a typed error when the manifest record is malformed JSON', async () => {
     const gateway = new FakeEnsResolverGateway()
       .seedText(NAME, MANIFEST_RECORD_KEY, '{not json')
