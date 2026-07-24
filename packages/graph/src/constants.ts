@@ -1,49 +1,44 @@
 /**
- * Fixed, public configuration for the Token API adapter. These are canonical,
- * well-known mainnet addresses — not stand-ins for live data, just parameters
- * of the derivations documented in README.md and adapter.ts.
+ * Fixed, public configuration for the subgraph adapter. See README.md for how
+ * this subgraph was chosen and verified, and for the block-out-of-range
+ * behaviour `UNISWAP_V3_MAINNET_START_BLOCK` documents.
  */
-
-export const DEFAULT_NETWORK = 'mainnet';
-
-export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 /**
- * Reference token used by `getLatestBlock()` as a live proxy for "chain head"
- * (the Token API has no dedicated chain-head endpoint — see README.md
- * "getLatestBlock" section). WETH is chosen because it trades on effectively
- * every block on mainnet, so its `last_update_block_num` tracks the head
- * closely.
+ * Uniswap v3 mainnet subgraph, served through The Graph's decentralized
+ * gateway (`https://gateway.thegraph.com/api/<key>/subgraphs/id/<id>`).
+ * Verified live against our own Studio key on 2026-07-25 (see README.md):
+ * `_meta { block { number } }` and `token(id, block:{number})` both answer,
+ * and a pinned historical block returns genuinely different values than a
+ * later one for the same token.
  */
-export const HEAD_PROXY_TOKEN = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
+export const UNISWAP_V3_MAINNET_SUBGRAPH_ID = '5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV';
 
 /**
- * Canonical mainnet stablecoin contracts, used only to recognise which side
- * of a liquidity pool is USD-denominated for the `liquidityUsd` derivation
- * (see README.md). Not a price oracle: each is assumed to be worth ~$1.
+ * The manifest's `startBlock`, read off the subgraph's own error message when
+ * queried before it (see README.md "Block-out-of-range"): "requested block
+ * 1000, before minimum `startBlock` of manifest 12369621". Exported so a
+ * caller can sanity-check a requested block before spending a round trip.
  */
-export const STABLECOINS: Record<string, string> = {
-  USDC: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
-  USDT: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
-  DAI: '0x6B175474E89094C44Da98b954EedeAC495271d0F',
-};
-
-/** How many holders count as "top 10" for the `top10Pct` signal. */
-export const TOP_HOLDERS_COUNT = 10;
+export const UNISWAP_V3_MAINNET_START_BLOCK = 12369621;
 
 /**
- * Bound on how many rows we ask for when looking for the token's oldest
- * transfer (`ageBlocks`) or recent mint activity (`hasActiveMintRole`).
- * The Token API has no way to ask "give me only the oldest transfer", so we
- * page a bounded amount and take the oldest block seen — see README.md for
- * why this is a documented lower bound, not an exact age.
+ * Token entity `id`s in this subgraph are the contract address, lower-cased
+ * (the subgraph stores/keys them that way — see README.md "Address casing").
+ * Querying with a checksummed address silently matches nothing (`token:
+ * null`), so every address this adapter sends is lower-cased first.
  */
-export const TRANSFER_SCAN_LIMIT = 1000;
+export function normalizeTokenAddress(token: string): string {
+  return token.toLowerCase();
+}
 
 /**
- * A mint (transfer from the zero address) counts as "recent" if it happened
- * within this many blocks of the block being evaluated (~7200 blocks is
- * roughly one day on mainnet at ~12s/block). See README.md
- * "hasActiveMintRole" for what this signal actually proves.
+ * `TokenSignals` fields this adapter cannot honestly source from a
+ * block-pinned subgraph query in this scope (see README.md "What is left
+ * unimplemented, and why"). Exported so a consumer can filter them out
+ * programmatically instead of guessing from a sentinel value. Numeric fields
+ * in this list are always `NaN`; `hasActiveMintRole` is always `false`. A
+ * test in `adapter.test.ts` asserts the returned object actually matches
+ * this list, so the two cannot silently drift apart.
  */
-export const MINT_RECENCY_BLOCKS = 7200;
+export const UNIMPLEMENTED_SIGNAL_KEYS = ['holders', 'top10Pct', 'transfers', 'hasActiveMintRole'] as const;

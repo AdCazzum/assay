@@ -1,184 +1,213 @@
 # @assay/graph
 
 `GraphPort` (see `packages/core/src/ports.ts`) implemented over **The Graph's
-Token API** (mainnet, read-only), served by Pinax at
-`https://api.pinax.network`. This is the source of truth both the provider and
-the verifier read through, so its correctness decides whether honest providers
+decentralized gateway**, querying the **Uniswap v3 mainnet subgraph**
+directly with GraphQL. This is the source of truth both the provider and the
+verifier read through, so its correctness decides whether honest providers
 get slashed (SPEC §12).
 
-No client SDK or schema library is used: `fetch` is injected
-(`createGraphAdapter({ apiKey, fetch })`) so unit tests drive a fake, and
-response rows are validated by hand in `src/tokenApi.ts` (see "Why no zod"
-below).
+This replaces the previous implementation over The Graph's Token API (see
+"Why this exists / what changed" below). No client SDK or schema library is
+added: `fetch` is injected (`createGraphAdapter({ apiKey, fetch })`) so unit
+tests drive a fake (`FakeGatewayFetch` in `adapter.test.ts`), and response
+fields are validated by hand in `src/gatewayClient.ts`, same approach as
+before.
 
-## Which endpoints, and how they were found
+## Why this exists / what changed (#42, follow-up to #10)
 
-The Token API's docs at `thegraph.com/docs/en/token-api/...` 301-redirect to
-`app.pinax.network/docs/api/...` (checked 2026-07-24, via WebSearch +
-context7's `graphprotocol/docs` and live fetches of the redirected pages).
-There is no hosted OpenAPI JSON at a stable URL, so endpoint paths, params and
-response fields below are transcribed from those rendered docs pages, plus one
-live unauthenticated request (`curl .../v1/evm/pools` → `401
-{"error":{"status":401,"code":"unauthorized"}}`) that confirmed the host is
-live and the error shape.
+The Token API adapter #10 shipped could not honour `atBlock` for four of six
+`TokenSignals` fields (`holders`, `top10Pct`, `liquidityUsd`, `transfers`):
+those endpoints have no historical-block parameter at all and only ever
+reflect the indexer's live state. That is fatal for a verifier that must
+re-derive a claim **at the same block** it was made at (SPEC §12) — comparing
+against live state instead means the verifier is really comparing against
+"whatever changed since serve time," which slashes honest providers on data
+drift, not on lies. Separately, the Token API's docs moved behind a
+different product (Pinax) requiring a different kind of credential than the
+`GRAPH_API_KEY` this project actually has.
 
-Auth: `Authorization: Bearer <GRAPH_API_KEY>` (same convention as the rest of
-The Graph's API key auth). Rate limiting: undocumented limits, `429` on
-overage (confirmed in prose docs, not tested against a real key here since
-none exists yet — see `blocked_on_credentials`).
+Subgraph queries through `gateway.thegraph.com`, by contrast, accept a
+`block: { number: N }` argument per field and genuinely honour it — a query
+pinned to a historical block returns the state **as of that block**, and a
+block the subgraph cannot honestly answer for is a loud GraphQL error, never
+a silent live-data fallback. That is the property this package is built
+around now.
 
-## TokenSignals field mapping
+## Which subgraph, and how it was verified
 
-| Field | Endpoint(s) | Real-time or historical? |
+**Uniswap v3, Ethereum mainnet**, subgraph id
+`5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV`
+(`UNISWAP_V3_MAINNET_SUBGRAPH_ID` in `constants.ts`), queried at
+`https://gateway.thegraph.com/api/<GRAPH_API_KEY>/subgraphs/id/<id>`.
+
+Verified live against a real Studio key on 2026-07-25, reproducing the exact
+block-20000000 row from the issue for USDC (`0xa0b8...eb48`):
+
+| block | txCount | totalValueLockedUSD |
 |---|---|---|
-| `holders` | `GET /v1/evm/tokens?contract=` → `holders` | **Real-time only** |
-| `transfers` | `GET /v1/evm/tokens?contract=` → `total_transfers` | **Real-time only** |
-| `top10Pct` | `GET /v1/evm/holders?contract=&limit=10` (top holder `value`s, summed) ÷ `GET /v1/evm/tokens` → `circulating_supply` | **Real-time only** |
-| `liquidityUsd` | `GET /v1/evm/pools?input_token=` / `output_token=` to find pools, then `GET /v1/evm/balances?address=<pool>&contract=<stablecoin>` for the stablecoin side | **Real-time only**, approximated (see below) |
-| `ageBlocks` | `GET /v1/evm/transfers?contract=&end_block=&age=180` — `endBlock` minus the oldest `block_num` seen | **Historically pinnable**, bounded (see below) |
-| `hasActiveMintRole` | same `/v1/evm/transfers` window — any transfer `from` the zero address within `MINT_RECENCY_BLOCKS` of `endBlock` | **Historically pinnable**, and a behavioral proxy, not a role check (see below) |
-| `atBlock` | `GET /v1/evm/tokens` → `last_update_block_num` for the queried token | the block the real-time fields above actually reflect |
+| 20000000 | 13682874 | 640775689.2757809999999999999999998 |
 
-## The block-stamping finding (SPEC §12)
+independently queried from this box, byte-for-byte matching the issue's own
+prior measurement. The issue's 22000000/24000000 rows are not re-quoted here
+since USDC's TVL keeps moving and the exact figures are not the point — the
+point is that *the same query at two different pinned blocks returns two
+different numbers*, which `scripts/smoke.ts` (below) proves fresh on every
+run, and which `live_evidence` for this PR shows for a real run.
 
-**Four of the six `TokenSignals` fields (`holders`, `top10Pct`,
-`liquidityUsd`, `transfers`) come from Token API endpoints
-(`/v1/evm/tokens`, `/v1/evm/holders`, `/v1/evm/pools`, `/v1/evm/balances`)
-that have no historical-block parameter at all.** They only ever reflect the
-indexer's current state; there is no way to ask any of them "what was this
-value at block N" for a past N. Only `/v1/evm/transfers` accepts
-`start_block`/`end_block`, which is why `ageBlocks` and `hasActiveMintRole`
-are the only two signals this adapter can actually pin to a caller-supplied
-`atBlock`.
+Also verified live, both load-bearing for this adapter's design:
 
-This adapter never pretends otherwise: `getTokenSignals(token, atBlock)`
-always stamps its result with the block it could actually stand behind
-(`last_update_block_num` for the token, from `/v1/evm/tokens`) — **not** the
-caller's requested `atBlock` when the two differ. See
-`adapter.test.ts`'s "block-stamping" tests for both cases (request matches
-live state; request is stale and gets honestly overridden).
+- `_meta { block { number } }` answers with no `block` argument (the
+  subgraph's own indexed head) — this is what `getLatestBlock()` uses.
+- A block before the manifest's start returns a **loud GraphQL error**:
+  `bad query: bad query: requested block 1000, before minimum
+  \`startBlock\` of manifest 12369621` — this is `startBlock`
+  (`UNISWAP_V3_MAINNET_START_BLOCK`).
+- A block past what the gateway's indexers have processed also errors, with
+  a *different* message shape: `bad indexers: {0x...:
+  Unavailable(missing block: 99999999, latest: 25605448), ...}`. Both are
+  wrapped as `GraphBlockOutOfRangeError` (`reason: 'before-start' |
+  'not-yet-indexed'`) — see "Block-out-of-range" below.
+- Querying `token(id: "0xA0b8...")` with a **checksummed** address returns
+  `token: null` — this subgraph keys `Token.id` by the **lower-cased**
+  address. See "Address casing" below.
 
-**What this means for SPEC §12 / the verifier design:** a verifier that calls
-`getTokenSignals(token, claim.atBlock)` some time after serve, expecting to
-reproduce a bond-relevant claim about `holders`/`top10Pct`/`liquidityUsd`
-*at the exact serve-time block*, cannot get that from the Token API through
-this adapter — it will get *current* data instead, honestly labeled with the
-current block. In the demo, the challenge happens seconds to minutes after
-serve, so drift in these real-time-only fields is expected to be negligible
-in practice; treat that as a "the timescale is short" argument, not a
-data-integrity guarantee. SPEC §12's own proposed mitigation — cache a
-snapshot at serve time, and have the verifier compare against that cached
-snapshot rather than re-querying live — is the actual fix, and it has to live
-above this adapter (in `cap-rugscore` or `core`), because the Token API gives
-this package nothing to build a true historical query on for those four
-fields.
+Two candidate community subgraphs that might have covered `holders`
+(`ERC20 Balances Mainnet`, id `35AYsvtJ7SjD93JZcjHK7KTSFyC8h74YHkg2hTxRsRer`,
+and `erc20-holder-ethereum-mainnet`, id
+`7jFFJAp92CCHDAxxY5znN9BnRjefgdmH4BPyqDfwbCSU`) were tried live against the
+gateway and both returned `subgraph not found: no allocations` — nobody is
+currently indexing them on the decentralized network, so the gateway cannot
+serve them at all, pinned or not. Per the issue's own instruction ("verify
+every subgraph id with a real query before building on it"), that
+disqualifies them; see "What is left unimplemented, and why" below.
 
-## `getLatestBlock()`: there is no chain-head endpoint
+## `TokenSignals` field mapping
 
-The Token API has no `/blocks` or `/network` endpoint that returns "the
-current head". `getLatestBlock()` uses `last_update_block_num` from
-`/v1/evm/tokens` for a fixed, highly-liquid reference contract (WETH,
-`HEAD_PROXY_TOKEN` in `constants.ts`), which trades on effectively every
-mainnet block, as a live proxy for the chain head. This is real, live data —
-not a fabricated block number — but it is an approximation: it can lag the
-true head by the indexer's own processing latency (typically framed as
-sub-block in Pinax's docs, unverified against a real key here).
+| Field | Source | Real or unimplemented |
+|---|---|---|
+| `atBlock` | the `$block` actually queried (the caller's `atBlock`, or `getLatestBlock()`'s result when omitted) | real |
+| `liquidityUsd` | `token(id, block).totalValueLockedUSD` | **real, block-pinned** |
+| `ageBlocks` | `$block` minus the earliest-created Uniswap v3 `pool` trading this token (`pools(where: token0/token1, orderBy: createdAtBlockNumber asc, first: 1, block)`) | **real, block-pinned**, a disclosed lower bound (see below) |
+| `holders` | — | **unimplemented** (`NaN`) |
+| `top10Pct` | — | **unimplemented** (`NaN`) |
+| `transfers` | — | **unimplemented** (`NaN`) |
+| `hasActiveMintRole` | — | **unimplemented** (`false`) |
 
-## `liquidityUsd`: an approximation, not a TVL feed
+`UNIMPLEMENTED_SIGNAL_KEYS` in `constants.ts` lists the four unimplemented
+fields programmatically, so a consumer does not have to guess from the
+sentinel value which fields are real; `adapter.test.ts` asserts the returned
+object actually matches that list.
 
-Neither `/v1/evm/pools` nor `/v1/evm/pools/ohlc` returns a USD-denominated
-reserve or TVL figure — `pools` returns pool/token metadata and a
-transaction count, `pools/ohlc` returns price candles (open/high/low/close)
-and volume, not reserves. There is no separate "prices" endpoint documented
-either.
+### `ageBlocks`: a real, block-pinned, but lower-bound signal
 
-So `liquidityUsd` is derived, not read: for every pool where `token` trades
-directly against a recognised stablecoin (`STABLECOINS` in `constants.ts`:
-USDC, USDT, DAI), we read the stablecoin's balance held by the pool contract
-via `/v1/evm/balances?address=<pool>&contract=<stablecoin>` (the balances
-endpoint works on any address, pool contracts included) and double it,
-assuming a roughly symmetric-value two-sided pool. Known biases, disclosed
-rather than hidden:
+`pools(..., block: { number: $block })` only returns pools that existed *as
+of* `$block` — if the token has no Uniswap v3 pool yet at that block, the
+list is empty, and `ageBlocks` is reported as `NaN` ("not observed on this
+venue as of this block"), not `0` ("brand new"): those are different claims
+and conflating them would be exactly the kind of invented precision this
+issue exists to remove.
 
-- **Undercounts** liquidity that only exists in pools *not* paired against a
-  recognised stablecoin (e.g. TOKEN/WETH with no direct stablecoin pool). A
-  token with real liquidity only against WETH reports `liquidityUsd: 0`
-  here, which means "not detected by this method", not "confirmed zero".
-- **Mis-weights** non-50/50 AMMs (Curve, Balancer, concentrated-liquidity
-  Uniswap v3/v4 ranges) where "double one side" isn't the right multiplier.
-- Real-time only, like `holders`/`top10Pct`/`transfers` above.
+When a pool *is* found, `ageBlocks = $block - createdAtBlockNumber` of the
+earliest one. This is a genuine, block-pinned read (unlike the old Token-API
+adapter's `ageBlocks`, which was never block-pinned at all), but it is
+still a **lower bound**, not true contract-deployment age, for any token
+older than its first Uniswap v3 listing — USDC included, which predates
+Uniswap v3 itself. "At least this old, on this venue" is what the number
+means.
 
-A more complete version would need a genuine price oracle to value non-
-stablecoin pairs, which is out of scope for this package (Token-API-only,
-per `AGENTS.md`).
+### `holders`, `top10Pct`, `transfers`, `hasActiveMintRole`: what is left unimplemented, and why
 
-## `ageBlocks`: a documented lower bound, capped by API retention
+None of these can be honestly answered by a block-pinned subgraph query
+within this package's scope right now:
 
-`/v1/evm/transfers` defaults to 30 days of history and maxes out at 180 days
-via its `age` parameter (per Pinax's docs) — we always pass `age: 180` to get
-the largest window available. Within one page (`TRANSFER_SCAN_LIMIT` rows,
-`constants.ts`), we take the oldest `block_num` seen and report
-`endBlock - oldestBlockSeen`.
+- **`holders`** and **`top10Pct`** need a balance-ranked view of every
+  holder of the token, which the Uniswap v3 subgraph does not track (it
+  indexes pools/swaps, not ERC-20 balances generally). The two community
+  subgraphs that claim to cover this were unreachable through the gateway
+  (see above) — not "we didn't look," but "we looked, tried live queries,
+  and they don't answer."
+- **`transfers`** — Uniswap v3's `Token.txCount` is a real, block-pinned
+  number, but it counts Uniswap v3 swaps/mints/burns involving the token,
+  not raw ERC-20 `Transfer` events. Relabelling that as `transfers` would be
+  exactly the "derivation dressed as a read" #10 was flagged for, so it is
+  left unimplemented instead of quietly repurposed.
+- **`hasActiveMintRole`** needs contract-level introspection (bytecode or a
+  role-check `eth_call`), which no subgraph exposes; the old Token-API
+  adapter's version of this field was already disclosed as "a behavioral
+  proxy, not a role check" — this package does not attempt a weaker proxy
+  either, since a proxy over the wrong kind of transfer event (Uniswap v3
+  Mint/Burn are LP-share events, not the token's own ERC-20 `Transfer`) would
+  be actively misleading, not just approximate.
 
-Two honest caveats:
+If SPEC's rug-score capability needs any of these four, it needs a second,
+purpose-built adapter (a dedicated ERC-20 balances subgraph once one is
+verifiably indexed, or a direct RPC read for mint-role introspection) —
+that is out of scope for a Uniswap-v3-subgraph-only package.
 
-1. If the token has more transfers in-window than fit in one page, the
-   oldest transfer *in the page* isn't necessarily the oldest *in the
-   window* — `ageBlocks` underestimates for very active tokens.
-2. If the token is older than the API's ~180-day retention (true for almost
-   any established token — USDC included), `ageBlocks` reports "at least
-   this old", not the true age since deployment; the Token API has no
-   deployment-block field anywhere.
+## `getLatestBlock()`: report a head you can actually query
 
-This floor is arguably fine for what `ageBlocks` is *for* in `cap-rugscore`
-(SPEC §6): a rug-score heuristic mainly needs to distinguish freshly
-deployed tokens from established ones, and it does that correctly within the
-window; it just can't tell you *how* established an old token is beyond "at
-least ~180 days".
+`_meta { block { number } }`, queried with no `block` argument, reports the
+block **this subgraph's own indexers** have reached. This is deliberately
+not "the true chain head from an RPC provider": that number can be ahead of
+what this subgraph has indexed to, and pinning a subsequent query to it would
+then fail with the same `not-yet-indexed` error documented below (confirmed
+live: querying a block far past `_meta`'s reported head returns `bad
+indexers: {...: Unavailable(missing block: ..., latest: ...)}`).
+`getLatestBlock()` uses `_meta` from the *same* subgraph every other query in
+this package hits, so a `getTokenSignals(token, await getLatestBlock())`
+round trip is always pinnable.
 
-## `hasActiveMintRole`: a behavioral proxy, not a role check
+## Block-out-of-range: two real error shapes, one typed error
 
-No Token API endpoint exposes contract bytecode, `owner()`, or role data —
-checked `tokens`, `holders`, `transfers`, `balances`, `pools`, `pools/ohlc`,
-`balances/historical` (the full EVM-tokens/EVM-DEX surface documented); none
-of it is contract introspection. A true "does this contract currently have a
-privileged, callable mint function" check needs an RPC read (bytecode scan
-or a known-selector `eth_call`), which is out of scope for a Token-API-only,
-read-only adapter (see `AGENTS.md`'s package boundary for `packages/graph`).
+`GraphBlockOutOfRangeError` (`errors.ts`) wraps both real failure modes
+observed live against this subgraph:
 
-Instead, `hasActiveMintRole` answers a related, honestly-different question
-from the same transfer window used for `ageBlocks`: **has this contract
-minted (a transfer *from* the zero address) within `MINT_RECENCY_BLOCKS`
-(~7200 blocks, ~1 day) of the evaluated block?** This is a real, disclosed
-proxy with a known error direction:
+- `reason: 'before-start'` — the block predates the subgraph manifest's
+  indexed history (`before minimum \`startBlock\``). Nothing before block
+  `UNISWAP_V3_MAINNET_START_BLOCK` (12369621, Uniswap v3's own mainnet
+  deployment) can ever be answered by this subgraph.
+- `reason: 'not-yet-indexed'` — the block is more recent than what the
+  gateway's indexers have processed so far (`Unavailable(missing block: ...,
+  latest: ...)`). This is the "subtler trap" the issue calls out: naively
+  asking an RPC provider for the chain head and pinning to it can race ahead
+  of subgraph indexing and fail this way — which is exactly why
+  `getLatestBlock()` above deliberately reports the subgraph's own head
+  instead.
 
-- **False negative:** a contract can hold an active, callable mint role and
-  simply not have used it recently.
-- **False positive (rare):** a burn-then-remint accounting pattern could
-  look like a fresh mint without a genuinely privileged, ongoing mint
-  capability.
+Either way, the caller gets a typed exception with `.atBlock` and `.reason`,
+never a silent fallback to unpinned/live data.
 
-If SPEC's rug-score claim for `hasActiveMintRole` needs the stronger,
-bytecode-level guarantee, that has to come from a second adapter (a direct
-mainnet RPC read) composed alongside this one — not from the Token API.
+## Address casing
+
+This subgraph's `Token.id` (and pool `token0`/`token1` filters) are keyed by
+the **lower-cased** contract address. A checksummed address (mixed case, EIP-55)
+silently matches nothing — `token: null` — rather than erroring, which would
+be indistinguishable from "this token genuinely has no Uniswap v3 presence."
+`normalizeTokenAddress()` (`constants.ts`) lower-cases every address this
+adapter sends before it is used, and a test in `adapter.test.ts` asserts this.
 
 ## Design notes
 
-- **Why no zod.** No package in this workspace declares `zod` as a
-  dependency yet (checked every `packages/*/package.json`), and adding one
-  here would touch `pnpm-lock.yaml`, which every parallel agent building a
-  sibling package would collide on (see `AGENTS.md`). Response rows are
-  validated by hand in `tokenApi.ts` (`asString`/`asFiniteNumber`/`asRow`):
-  a missing or mistyped field throws a `GraphMalformedResponseError` rather
-  than silently becoming `undefined`/`NaN` and corrupting a signal downstream.
-- **Errors:** `GraphApiError` (HTTP non-2xx), `GraphRateLimitError` (429,
-  with `retryAfterSeconds` when the API sends `Retry-After`),
-  `GraphTokenNotFoundError` (`/v1/evm/tokens` had no row for the contract —
-  never indexed, or not an ERC-20 on this network), and
-  `GraphMalformedResponseError` (2xx but a row failed validation).
-- **Test doubles:** `adapter.test.ts`'s `createFakeTokenApiFetch` is an
-  obviously-named fake — it stands in for the HTTP transport only, in unit
-  tests, and is never used by `scripts/smoke.ts`.
+- **Why no zod / GraphQL client library.** No package in this workspace
+  declares one, and adding one would touch `pnpm-lock.yaml`, which every
+  parallel agent building a sibling package would collide on (see
+  `AGENTS.md`). Response fields are validated by hand in `gatewayClient.ts`
+  (`asRow`/`asNumericString`/`asIntNumber`): a missing or mistyped field
+  throws `GraphMalformedResponseError` rather than silently becoming
+  `undefined`/`NaN` and corrupting a signal downstream. Note the subgraph
+  serialises `BigInt`/`BigDecimal` scalars (block numbers, TVL) as JSON
+  *strings*, while plain `Int` scalars (`_meta.block.number`) are JSON
+  *numbers* — both parsing paths are handled and tested separately.
+- **Errors:** `GraphApiError` (HTTP/GraphQL-level failure not about block
+  range), `GraphRateLimitError` (429, with `retryAfterSeconds` when the
+  gateway sends `Retry-After`), `GraphBlockOutOfRangeError` (see above),
+  `GraphTokenNotFoundError` (`token` resolved to `null` — never traded on
+  this venue, or not an ERC-20 on this network), and
+  `GraphMalformedResponseError` (2xx with no GraphQL errors, but a field
+  failed validation).
+- **Test doubles:** `adapter.test.ts`'s `createFakeGatewayFetch` builds a
+  `FakeGatewayFetch` — an obviously-named fake that stands in for the HTTP
+  transport only, in unit tests, and is never used by `scripts/smoke.ts`.
 
 ## Live smoke test
 
@@ -186,9 +215,11 @@ mainnet RPC read) composed alongside this one — not from the Token API.
 pnpm --filter @assay/graph exec tsx scripts/smoke.ts
 ```
 
-Reads `GRAPH_API_KEY` from the repo root `.env` (see `.env.example`), queries
-USDC (a clean, well-known control token) for `getLatestBlock()` and
-`getTokenSignals()` (both live and pinned to that latest block), and prints
-the results. Exits with a clear message, no stack trace, if the key is
-missing. **Not run yet against a real key** — `.env` isn't provisioned in
-this environment (see the PR / `blocked_on_credentials`).
+Reads `GRAPH_API_KEY` from the repo root `.env` (see `.env.example`), then:
+queries this subgraph's own indexed head; queries USDC signals pinned to two
+different historical blocks and prints both, plus an explicit PASS/FAIL on
+whether `liquidityUsd` actually differed between them (the block-pinning
+proof this issue asks for); queries the current head with `atBlock` omitted;
+and confirms a block before the manifest start fails with
+`GraphBlockOutOfRangeError` rather than succeeding. Exits with a clear
+message, no stack trace, if the key is missing.
