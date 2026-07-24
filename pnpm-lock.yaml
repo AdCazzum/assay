@@ -76,6 +76,9 @@ importers:
       '@assay/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@assay/graph':
+        specifier: workspace:*
+        version: link:../../packages/graph
       '@assay/payments':
         specifier: workspace:*
         version: link:../../packages/payments
