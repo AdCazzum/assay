@@ -8,6 +8,16 @@
  * HashScan testnet URL, a mainnet block number) but this file runs no
  * network call itself: it exists so the dashboard can be rehearsed with zero
  * network, per issue #30 / SPEC.md §14's rehearsal budget.
+ *
+ * The claim values below are not invented: they are the live-measured
+ * numbers `cap-rugscore` got back from the real Uniswap v3 subgraph for USDC
+ * (`0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`, #49 /
+ * `packages/graph/README.md`) — ~$361.2M liquidity in its deepest pool, ages
+ * 13,235,876 blocks, 36,491,026 swaps/mints/burns, 43.98% top-pool
+ * concentration. Run through the real `scoreRugPullRisk` these signals score
+ * 9 (low risk), which is what `serve` reports. This fixture used to narrate
+ * `hasActiveMintRole`, a signal #49 removed because it could not be honestly
+ * sourced from a block-pinned query (issue #54).
  */
 
 import type { LoopEvent } from '../events.js';
@@ -61,11 +71,13 @@ export const HAPPY_PATH_EVENTS: readonly LoopEvent[] = [
   {
     step: 'serve',
     status: 'ok',
-    summary: 'rugScore.run(TOKEN_X) -> score 81 (low risk)',
+    summary: 'rugScore.run(USDC 0xa0b8...eb48) -> score 9 (low risk)',
     artifacts: [
-      { label: 'claim holders', value: '18432' },
-      { label: 'claim hasActiveMintRole', value: 'false' },
-      { label: 'atBlock', value: '21050112' },
+      { label: 'claim liquidityUsd', value: '361202208' },
+      { label: 'claim ageBlocks', value: '13235876' },
+      { label: 'claim txCount', value: '36491026' },
+      { label: 'claim topPoolConcentrationPct', value: '43.98' },
+      { label: 'atBlock', value: '22984210' },
       { label: 'jobId', value: 'job-1' },
     ],
   },
