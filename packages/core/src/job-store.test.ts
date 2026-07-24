@@ -12,6 +12,7 @@ const claims: Claim[] = [{ k: 'hasActiveMintRole', v: false, atBlock: 42 }];
 function seedJob(store: JobStore) {
   return store.create({
     provider: 'rugscore.assay.eth',
+    capabilityId: 'rugscore',
     request: '0xTOKEN',
     paymentTx: '0xpay1',
     result: { score: 12 },
@@ -56,6 +57,16 @@ describe('createJobStore', () => {
     expect(settled.verdict).toEqual({ valid: true });
   });
 
+  it('moves served -> settled directly, with no verdict, for a job accepted and closed out without ever being challenged', () => {
+    const store = createJobStore();
+    const job = seedJob(store);
+
+    const settled = store.transition(job.jobId, 'settled');
+
+    expect(settled.status).toBe('settled');
+    expect(settled.verdict).toBeUndefined();
+  });
+
   it('rejects an illegal transition (served -> slashed, skipping challenged) instead of silently ignoring it', () => {
     const store = createJobStore();
     const job = seedJob(store);
@@ -95,15 +106,15 @@ describe('createJobStore', () => {
     const job = seedJob(store);
 
     try {
-      store.transition(job.jobId, 'settled');
+      store.transition(job.jobId, 'slashed');
       throw new Error('should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(IllegalJobTransitionError);
       const e = err as IllegalJobTransitionError;
       expect(e.jobId).toBe(job.jobId);
       expect(e.from).toBe('served');
-      expect(e.to).toBe('settled');
-      expect(e.allowed).toEqual(['challenged']);
+      expect(e.to).toBe('slashed');
+      expect(e.allowed).toEqual(['challenged', 'settled']);
     }
   });
 

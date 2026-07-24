@@ -24,12 +24,12 @@ const inputSchema = {
  * instead whenever a specific claim looks objectively false.
  *
  * Wired against the real node (issue #46), `rate` still fails with a clear,
- * named error against a fresh checkout: `registry.updateReputation` (the ENS
- * write this needs) is itself an explicit stub until #16 lands, the same
- * "named error, not a fake result" posture `challenge` has for #26. See
- * `live-node.ts`'s `rate` doc comment for exactly what else core still owes
- * this tool (a job-store transition for an unchallenged job, which does not
- * exist yet either).
+ * named error against `@assay/registry`'s live ENS adapter: `updateReputation`
+ * (the write this needs) is itself an explicit stub until #16 lands. The job
+ * itself does close out for real: `rate` moves it `served -> settled` (with
+ * no `verdict`, distinguishing "nobody challenged it" from a challenge that
+ * failed) through the `JobStore` transition #26/#27 added — see
+ * `live-node.ts`'s `rate` doc comment.
  */
 export function registerRateTool(server: McpServer, node: AssayNodePort): void {
   server.registerTool(

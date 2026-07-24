@@ -35,6 +35,14 @@ export class FakeRegistryPort implements RegistryPort {
   readonly publishedManifests: Array<{ name: string; manifest: Manifest }> = [];
   readonly reputationUpdates: Array<{ name: string; delta: Partial<Reputation> }> = [];
   private txSeq = 0;
+  /**
+   * If set, the *next* `updateReputation` call throws this instead of
+   * writing, then clears itself (so a retry of the same call succeeds).
+   * Models a real ENS write failing once (SPEC.md §9: it is a real,
+   * ~24s-latency transaction, not guaranteed to land) without the failure
+   * being reused as an untested fake.
+   */
+  updateReputationError?: Error;
 
   /** Seeds `name` as already resolvable, as if registered before this test started. */
   seed(name: string, record: Omit<ProviderRecord, 'name'>): this {
@@ -64,6 +72,11 @@ export class FakeRegistryPort implements RegistryPort {
     name: string,
     delta: Partial<Reputation>,
   ): Promise<{ txHash: string; reputation: Reputation }> {
+    if (this.updateReputationError) {
+      const error = this.updateReputationError;
+      this.updateReputationError = undefined;
+      throw error;
+    }
     const existing = this.records.get(name);
     if (!existing) throw new UnknownProviderRecordError(name);
     this.reputationUpdates.push({ name, delta });
@@ -98,6 +111,12 @@ export class FakePaymentsPort implements PaymentsPort {
   private readonly autoConfirm: boolean;
   private paySeq = 0;
   private bondSeq = 0;
+  /**
+   * If set, the *next* `slash` call throws this instead of transferring,
+   * then clears itself (so a retry succeeds). Models a real Hedera
+   * transaction failing once without pretending the failure recurs forever.
+   */
+  slashError?: Error;
 
   constructor(opts: FakePaymentsPortOptions = {}) {
     this.autoConfirm = opts.confirmedTxIds === undefined;
@@ -134,6 +153,11 @@ export class FakePaymentsPort implements PaymentsPort {
 
   async slash(bondRef: string, toChallenger: string): Promise<{ txId: string }> {
     this.slashCalls.push({ bondRef, toChallenger });
+    if (this.slashError) {
+      const error = this.slashError;
+      this.slashError = undefined;
+      throw error;
+    }
     return { txId: `0xfake-slash-${this.slashCalls.length}` };
   }
 }

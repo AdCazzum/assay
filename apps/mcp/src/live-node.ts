@@ -19,14 +19,18 @@
  *    duplicates `node.ts`'s private `hashRequest` (three lines, not exported)
  *    — a small, known bit of drift risk flagged in the PR, not hidden here.
  *
- * `rate` and `challenge` are the two tools this file cannot fully wire for
- * real, and it does not pretend otherwise:
+ * `challenge` now that #26/#27 landed in core: it calls `AssayNode.challenge`
+ * (verdict) then `AssayNode.settle` (slash-or-reputation-rise) and returns the
+ * final job, `NodePort`'s documented contract. Against the real adapters this
+ * can still fail honestly: `@assay/registry`'s live ENS adapter's
+ * `updateReputation` is `#16`'s own not-yet-built piece, so a real challenge
+ * against it surfaces core's `ReputationUpdateFailedError` (wrapping the #16
+ * stub's error) rather than silently succeeding — same "fail with a clear,
+ * named message" posture `rate` below already has for the same reason.
  *
- *  - `challenge` delegates straight to `AssayNode.challenge`, which always
- *    rejects until #26 lands (SPEC.md, node.ts). Nothing to add here.
- *  - `rate` (issue #46's second open question) is implemented as far as the
- *    existing core API allows — see its doc comment below for exactly what
- *    core still owes it.
+ * `rate` (issue #46's second open question) is implemented as far as the
+ * existing core API allows — see its doc comment below for exactly what core
+ * still owes it.
  */
 
 import { createHash } from 'node:crypto';
@@ -125,12 +129,14 @@ export function createLiveAssayNode(config: LiveAssayNodeConfig): AssayNodePort 
     },
 
     async challenge(jobId, claimKey) {
-      // `AssayNode.challenge` always rejects until #26 lands (it names the
-      // issue in its own message); this line never returns normally, but
-      // await lets that rejection propagate instead of this function
-      // resolving with `undefined` cast to `Job`.
-      await node.challenge(jobId, claimKey);
-      throw new Error('unreachable: AssayNode.challenge always rejects until #26 lands');
+      // `AssayNode.challenge` (#26) re-derives the claim through the
+      // capability's real `verify()` and records the verdict; `AssayNode.settle`
+      // (#27) then acts on it for real (a Hedera slash + ENS reputation drop,
+      // or an ENS reputation rise on a failed challenge) and returns the final
+      // job. Both are real calls against whatever ports this node was built
+      // with, not simulated here.
+      const verdict = await node.challenge(jobId, claimKey);
+      return node.settle(jobId, verdict);
     },
 
     /**
@@ -143,24 +149,21 @@ export function createLiveAssayNode(config: LiveAssayNodeConfig): AssayNodePort 
      * What this can and cannot do against the *real* adapters today:
      *
      *  - It can and does check the job is actually `served` (not already
-     *    challenged/slashed/settled) using `AssayNode`'s own `jobs` store —
-     *    no core change needed for that, `JobStore.get` already exists.
+     *    challenged/slashed/settled) using `AssayNode`'s own `jobs` store.
+     *  - It moves the job `served -> settled` with no `verdict`, through the
+     *    `JobStore` transition #26/#27 added for exactly this (see
+     *    `job-store.ts`'s doc comment on why "nobody challenged it" reuses
+     *    `settled` rather than inventing a fifth status). Recorded *before*
+     *    the ENS write below, same ordering `AssayNode.settle` uses and for
+     *    the same reason: "this job was accepted, unchallenged" is true right
+     *    now regardless of whether the reputation write below succeeds.
      *  - It then calls `registry.updateReputation(...)`, the real
      *    `RegistryPort` method this is supposed to drive. Against
      *    `@assay/registry`'s live ENS adapter that call throws today
      *    ("updateReputation is tracked in #16") — this file does not paper
      *    over that; it is the same "fail with a clear, named message until
-     *    the tracked issue lands" posture `challenge` already has for #26.
-     *  - What core does *not* have, and what I did not add per the
-     *    instruction not to touch `packages/core` while #49 is in flight
-     *    there: a `JobStore` transition that takes a `served` job to a
-     *    closed/rated terminal state. `ALLOWED_TRANSITIONS` in
-     *    `job-store.ts` only allows `served -> challenged`; there is no
-     *    `served -> settled` (or any other) move for a job nobody
-     *    challenged. So even once #16 lands, a rated job's `status` stays
-     *    `"served"` here — core still owes either a new transition (e.g.
-     *    `served -> settled` with no verdict) or a dedicated terminal
-     *    status for this path. Documented in the PR, not invented here.
+     *    the tracked issue lands" posture `challenge` has for its own #16
+     *    dependency.
      */
     async rate(jobId, satisfied, _comment) {
       const job = node.jobs.get(jobId);
@@ -174,12 +177,13 @@ export function createLiveAssayNode(config: LiveAssayNodeConfig): AssayNodePort 
       // a mathematical increment — so the new totals are computed here off
       // a fresh read, not guessed as `{ jobs: 1 }`.
       const current = await registry.resolveProvider(job.provider);
+      const closed = node.jobs.transition(jobId, 'settled');
       await registry.updateReputation(job.provider, {
         jobs: current.reputation.jobs + 1,
         score: satisfied ? current.reputation.score + 1 : current.reputation.score,
       });
 
-      return job;
+      return closed;
     },
   };
 }

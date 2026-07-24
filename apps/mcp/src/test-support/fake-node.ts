@@ -94,6 +94,7 @@ export const FIXTURE_ASSESSMENT = assessProvider(FIXTURE_PROVIDER_RECORD);
 export const FIXTURE_JOB: Job = {
   jobId: 'job-1',
   provider: 'rugscore.assay.eth',
+  capabilityId: 'rugscore',
   request: '0xTOKEN',
   paymentTx: '0.0.9695801@1234567890.000000001',
   result: { score: 12 },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createCapabilityRegistry, createJobStore, PayDeclinedError } from '@assay/core';
+import { createCapabilityRegistry, createJobStore, PayDeclinedError, ReputationUpdateFailedError } from '@assay/core';
 import type { Capability, Manifest, ProviderRecord } from '@assay/core';
 import { createLiveAssayNode, RateNotApplicableError } from './live-node.js';
 import {
@@ -11,6 +11,7 @@ import {
 } from './test-support/live-ports.js';
 
 const PROVIDER_NAME = 'rugscore.assay.eth';
+const CHALLENGER_ACCOUNT_ID = '0.0.777';
 
 const manifest: Manifest = {
   capabilityId: 'echo',
@@ -21,20 +22,29 @@ const manifest: Manifest = {
   verifierHash: '0xseed',
 };
 
-/** Trivial capability so these tests never depend on `@assay/cap-rugscore`, which is being reshaped in a sibling issue. */
-const echoCapability: Capability<string, { echoed: string }> = {
-  id: 'echo',
-  async run(req) {
-    return { result: { echoed: req }, claims: [{ k: 'echoedLength', v: req.length, atBlock: 1 }] };
-  },
-  async verify() {
-    return { valid: true };
-  },
-};
+type EchoVerify = Capability<string, { echoed: string }>['verify'];
+
+/**
+ * Trivial capability so these tests never depend on `@assay/cap-rugscore`,
+ * which is being reshaped in a sibling issue. `verify` is injectable so the
+ * `challenge` tests below can drive both a true and a lying verdict through
+ * the same capability.
+ */
+function makeEchoCapability(verify?: EchoVerify): Capability<string, { echoed: string }> {
+  return {
+    id: 'echo',
+    async run(req) {
+      return { result: { echoed: req }, claims: [{ k: 'echoedLength', v: req.length, atBlock: 1 }] };
+    },
+    verify: verify ?? (async () => ({ valid: true })),
+  };
+}
 
 function buildLiveNode(opts?: {
   reputation?: Partial<ProviderRecord['reputation']>;
   paymentsOpts?: FakePaymentsPortOptions;
+  verify?: EchoVerify;
+  challengerAccountId?: string;
 }) {
   const registry = new FakeRegistryPort().seed(PROVIDER_NAME, {
     manifest,
@@ -43,10 +53,17 @@ function buildLiveNode(opts?: {
   const payments = new FakePaymentsPort(opts?.paymentsOpts);
   const graph = new FakeGraphPort();
   const capabilities = createCapabilityRegistry();
-  capabilities.register(echoCapability);
+  capabilities.register(makeEchoCapability(opts?.verify));
   const jobs = createJobStore();
 
-  const node = createLiveAssayNode({ registry, payments, graph, capabilities, jobs });
+  const node = createLiveAssayNode({
+    registry,
+    payments,
+    graph,
+    capabilities,
+    jobs,
+    challengerAccountId: opts?.challengerAccountId ?? CHALLENGER_ACCOUNT_ID,
+  });
   return { node, registry, payments, graph, jobs };
 }
 
@@ -106,11 +123,68 @@ describe('createLiveAssayNode', () => {
   });
 
   describe('challenge', () => {
-    it('still fails with a clear, named message until #26 lands', async () => {
-      const { node } = buildLiveNode();
+    it('a false claim: challenges and settles for real, slashing the bond and dropping reputation, returning the job "slashed"', async () => {
+      const { node, payments, registry } = buildLiveNode({
+        verify: async () => ({ valid: false, badClaim: 'echoedLength', reason: 'the length was fabricated' }),
+      });
       const job = await node.payAndCall(PROVIDER_NAME, 'hello');
 
-      await expect(node.challenge(job.jobId, 'echoedLength')).rejects.toThrow(/#26/);
+      const settled = await node.challenge(job.jobId, 'echoedLength');
+
+      expect(settled.status).toBe('slashed');
+      expect(settled.verdict).toEqual({
+        valid: false,
+        badClaim: 'echoedLength',
+        reason: 'the length was fabricated',
+      });
+      expect(payments.slashCalls).toEqual([
+        { bondRef: manifest.bondRef, toChallenger: CHALLENGER_ACCOUNT_ID },
+      ]);
+      const updated = await registry.resolveProvider(PROVIDER_NAME);
+      expect(updated.reputation.score).toBeLessThan(80);
+      expect(updated.reputation.slashes).toBe(1);
+    });
+
+    it('a valid claim: the challenge fails, raising reputation and never slashing, returning the job "settled"', async () => {
+      const { node, payments, registry } = buildLiveNode();
+      const job = await node.payAndCall(PROVIDER_NAME, 'hello');
+
+      const settled = await node.challenge(job.jobId, 'echoedLength');
+
+      expect(settled.status).toBe('settled');
+      expect(payments.slashCalls).toEqual([]);
+      const updated = await registry.resolveProvider(PROVIDER_NAME);
+      expect(updated.reputation.score).toBeGreaterThan(80);
+    });
+
+    it('surfaces the real registry adapter\'s #16 stub as a clear, named error rather than a fake success', async () => {
+      const registry = new Issue16StubRegistryPort({
+        name: PROVIDER_NAME,
+        manifest,
+        reputation: { score: 80, jobs: 20, slashes: 0, bondHbar: 50 },
+      });
+      const payments = new FakePaymentsPort();
+      const graph = new FakeGraphPort();
+      const capabilities = createCapabilityRegistry();
+      capabilities.register(makeEchoCapability());
+      const jobs = createJobStore();
+      const node = createLiveAssayNode({
+        registry,
+        payments,
+        graph,
+        capabilities,
+        jobs,
+        challengerAccountId: CHALLENGER_ACCOUNT_ID,
+      });
+
+      const job = await node.payAndCall(PROVIDER_NAME, 'hello');
+
+      const error = await node.challenge(job.jobId, 'echoedLength').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(ReputationUpdateFailedError);
+      expect((error as Error).message).toMatch(/#16/);
+      // the money/reputation-decision side already happened and was recorded truthfully
+      // (this challenge held up, so no slash): only the ENS write failed.
+      expect(jobs.get(job.jobId).status).toBe('settled');
     });
   });
 
@@ -123,21 +197,19 @@ describe('createLiveAssayNode', () => {
     it('refuses to rate a job that is not "served" (e.g. already moved past served)', async () => {
       const { node, jobs } = buildLiveNode();
       const job = await node.payAndCall(PROVIDER_NAME, 'hello');
-      // Core has no real path from `served` to `challenged` today outside
-      // `challenge()` itself (which always throws, #26); driving the store
-      // directly here only simulates the state rate() must refuse, it is
-      // not claiming challenge() works.
       jobs.transition(job.jobId, 'challenged');
 
       await expect(node.rate(job.jobId, true)).rejects.toThrow(RateNotApplicableError);
     });
 
-    it('bumps jobs and score by resolving the current reputation and writing the new totals', async () => {
+    it('bumps jobs and score by resolving the current reputation and writing the new totals, closing the job out as "settled"', async () => {
       const { node, registry } = buildLiveNode({ reputation: { jobs: 20, score: 80 } });
       const job = await node.payAndCall(PROVIDER_NAME, 'hello');
 
-      await node.rate(job.jobId, true);
+      const closed = await node.rate(job.jobId, true);
 
+      expect(closed.status).toBe('settled');
+      expect(closed.verdict).toBeUndefined();
       const updated = await registry.resolveProvider(PROVIDER_NAME);
       expect(updated.reputation.jobs).toBe(21);
       expect(updated.reputation.score).toBe(81);
@@ -163,7 +235,7 @@ describe('createLiveAssayNode', () => {
       const payments = new FakePaymentsPort();
       const graph = new FakeGraphPort();
       const capabilities = createCapabilityRegistry();
-      capabilities.register(echoCapability);
+      capabilities.register(makeEchoCapability());
       const jobs = createJobStore();
       const node = createLiveAssayNode({ registry, payments, graph, capabilities, jobs });
 
