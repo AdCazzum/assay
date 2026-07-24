@@ -1,0 +1,19 @@
+{
+  "name": "@assay/cap-rugscore",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "description": "The rug-pull risk scoring capability: run() + verify()",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@assay/core": "workspace:*",
+    "@assay/graph": "workspace:*"
+  }
+}

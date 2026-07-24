@@ -1,0 +1,22 @@
+{
+  "name": "@assay/provider",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "description": "Long-running agent that serves rug-score requests",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@assay/cap-rugscore": "workspace:*",
+    "@assay/core": "workspace:*",
+    "@assay/graph": "workspace:*",
+    "@assay/payments": "workspace:*",
+    "@assay/registry": "workspace:*"
+  }
+}

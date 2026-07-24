@@ -40,6 +40,33 @@ apps/
 - `mise` is not loaded in non-interactive shells: in scripted/tmux contexts run
   `eval "$(~/.local/bin/mise activate bash)"` first, or `pnpm`/`node` are not found.
 
+## Build tooling
+
+TypeScript ESM, `moduleResolution: "Bundler"`, run straight from source.
+
+- **No emit step.** Nothing here is published; every app runs under `tsx` and
+  tests run under `vitest`, both of which read `.ts` directly. So each package's
+  `build` script is `tsc --noEmit`: it is a typecheck, named `build` because
+  that is the workspace-wide verb. There is no `dist/`, and therefore no build
+  ordering and no stale-output class of bug.
+- **Packages resolve to source.** Each `package.json` has
+  `"exports": { ".": "./src/index.ts" }`, so `@assay/core` imports resolve to
+  the live source across the workspace with no watch step.
+- **Relative imports carry the `.js` extension** (`./types.js` → `types.ts`).
+  Both tsc and vite resolve it; keep it consistent.
+- **Dependencies are installed up front** (ethers, `@hashgraph/sdk`,
+  `@modelcontextprotocol/sdk`, vitest, tsx). Adding a dependency rewrites
+  `pnpm-lock.yaml`, which is the one file every parallel agent would collide on,
+  so **do not add packages unless the issue genuinely needs one** — and say so
+  in the PR when you do.
+- Commands: `pnpm -r typecheck`, `pnpm -r test`, or scoped to one package with
+  `pnpm --filter @assay/<pkg> test`. Prefer the scoped form while working.
+
+The shared contracts live in `packages/core/src/`: `types.ts` (`Claim`,
+`Capability`, `Manifest`, `Reputation`, `Job`) and `ports.ts` (`RegistryPort`,
+`PaymentsPort`, `GraphPort`). Adapters implement those interfaces; that is what
+lets the packages be built independently and in parallel.
+
 ## Networks & secrets
 
 Three independent networks (no bridge). Provide credentials via a local `.env`
