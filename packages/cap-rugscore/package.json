@@ -11,7 +11,8 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "verify-smoke": "tsx scripts/verify-smoke.ts"
   },
   "dependencies": {
     "@assay/core": "workspace:*",

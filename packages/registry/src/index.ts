@@ -1,13 +1,23 @@
 /**
  * @assay/registry — ENS registry adapter (Sepolia). See SPEC.md §4.
  *
- * `createEnsRegistry` implements `RegistryPort`'s manifest half
- * (`publishManifest` / `resolveProvider`, issue #15) for real, against
- * Sepolia. `updateReputation` is issue #16 and throws explicitly until then.
+ * `createEnsRegistry` implements the full `RegistryPort`: `publishManifest` /
+ * `resolveProvider` (issue #15) and `updateReputation` (issue #16), all
+ * against Sepolia.
  */
 
-export { createEnsRegistry, type CreateEnsRegistryOptions } from './ens-registry.js';
-export { createEthersEnsGateway, type EnsResolverGateway, type CreateEthersEnsGatewayOptions } from './ens-gateway.js';
+export {
+  createEnsRegistry,
+  type CreateEnsRegistryOptions,
+  type ReputationWriteProgress,
+} from './ens-registry.js';
+export {
+  createEthersEnsGateway,
+  type EnsResolverGateway,
+  type CreateEthersEnsGatewayOptions,
+  type EnsWriteAttempt,
+  type EnsWriteAttemptState,
+} from './ens-gateway.js';
 export {
   MANIFEST_RECORD_KEY,
   REPUTATION_RECORD_KEY,
@@ -22,4 +32,5 @@ export {
   MissingRecordError,
   MalformedRecordError,
   UnownedNameError,
+  InvalidReputationError,
 } from './errors.js';

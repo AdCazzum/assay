@@ -8,6 +8,8 @@
  * provider's data is corrupt".
  */
 
+import type { Reputation } from '@assay/core';
+
 /** Base class for every error this package throws. */
 export class EnsRegistryError extends Error {
   constructor(message: string) {
@@ -63,5 +65,24 @@ export class UnownedNameError extends EnsRegistryError {
     public readonly parentName: string,
   ) {
     super(`"${ensName}" is not "${parentName}" nor a subname under it`);
+  }
+}
+
+/**
+ * `updateReputation`'s read-modify-write produced a `Reputation` outside the
+ * valid range (score outside 0..100, or a negative jobs/slashes/bondHbar).
+ * SPEC.md §12 treats this as always a bug upstream, either in the delta the
+ * caller supplied or in an already-corrupt existing record, never a state
+ * worth publishing, so the write is refused rather than pushed to the public
+ * ENS record.
+ */
+export class InvalidReputationError extends EnsRegistryError {
+  constructor(
+    public readonly ensName: string,
+    public readonly field: keyof Reputation,
+    public readonly value: number,
+    public readonly reason: string,
+  ) {
+    super(`refusing to write reputation for "${ensName}": "${field}" = ${value} ${reason}`);
   }
 }
