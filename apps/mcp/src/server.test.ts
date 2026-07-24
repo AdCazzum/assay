@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { PayDeclinedError, type ProviderAssessment } from '@assay/core';
 import { createAssayMcpServer } from './server.js';
 import {
   FakeAssayNode,
+  FIXTURE_ASSESSMENT,
   FIXTURE_JOB,
   FIXTURE_PROVIDER_RECORD,
 } from './test-support/fake-node.js';
@@ -49,11 +51,20 @@ describe('assay MCP server', () => {
 
       expect(node.discoverCalls).toEqual(['rugscore']);
       expect(result.isError).toBeFalsy();
-      expect(result.structuredContent).toEqual(FIXTURE_PROVIDER_RECORD);
+      expect(result.structuredContent).toEqual({
+        provider: FIXTURE_PROVIDER_RECORD,
+        assessment: FIXTURE_ASSESSMENT,
+      });
       const text = (result.content as Array<{ type: string; text: string }>)[0].text;
       expect(text).toContain('rugscore.assay.eth');
       expect(text).toContain('5 HBAR');
       expect(text).toContain('score 92');
+      // the assessment's signals must actually be in the text, generically
+      // (not keyed off a hardcoded signal name), since that's the material
+      // an agent is supposed to reason over, not just the raw numbers.
+      for (const signal of FIXTURE_ASSESSMENT.signals) {
+        expect(text).toContain(signal.detail);
+      }
     });
 
     it('rejects a missing capabilityId without calling the node', async () => {
@@ -110,6 +121,57 @@ describe('assay MCP server', () => {
       });
       expect(result.isError).toBe(true);
       expect(node.payAndCallCalls).toEqual([]);
+    });
+
+    it('forwards force: true through to the node', async () => {
+      const { client } = await connect(node);
+      await client.callTool({
+        name: 'pay_and_call',
+        arguments: { capabilityId: 'rugscore', request: '0xTOKEN', force: true },
+      });
+
+      expect(node.payAndCallCalls).toEqual([{ capabilityId: 'rugscore', request: '0xTOKEN', force: true }]);
+    });
+
+    it('surfaces a PayDeclinedError as a useful, actionable result rather than an opaque failure', async () => {
+      const assessment: ProviderAssessment = {
+        providerName: 'rugscore.assay.eth',
+        priceHbar: 5,
+        jobs: 4,
+        slashes: 2,
+        slashRatio: 0.5,
+        unproven: false,
+        bondHbar: 50,
+        bondToPriceRatio: 10,
+        score: 40,
+        signals: [
+          { key: 'trackRecord', severity: 'concern', detail: '2 of 4 job(s) were slashed (50.0% slash ratio).' },
+        ],
+      };
+      const violations = [assessment.signals[0]];
+      node.payAndCallError = new PayDeclinedError(
+        'rugscore.assay.eth',
+        assessment,
+        violations[0].detail,
+        violations,
+      );
+      const { client } = await connect(node);
+
+      const result = await client.callTool({
+        name: 'pay_and_call',
+        arguments: { capabilityId: 'rugscore', request: '0xTOKEN' },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ type: string; text: string }>)[0].text;
+      expect(text).toContain('Declined to pay "rugscore.assay.eth"');
+      expect(text).toContain('50.0% slash ratio');
+      expect(text).toContain('force: true');
+      expect(result.structuredContent).toMatchObject({
+        declined: true,
+        providerName: 'rugscore.assay.eth',
+        violations,
+      });
     });
   });
 

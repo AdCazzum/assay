@@ -1,5 +1,5 @@
-import type { Job, ProviderRecord } from '@assay/core';
-import type { AssayNodePort } from './node-port.js';
+import type { Job } from '@assay/core';
+import type { AssayNodePort, DiscoverResult } from './node-port.js';
 
 /**
  * Thrown by `NotWiredAssayNode`. Named and worded so it reads honestly to
@@ -22,15 +22,21 @@ export class NodeNotWiredError extends Error {
  * stdio, and list its tools honestly, without pretending any of them work
  * end to end yet. Every method throws `NodeNotWiredError` instead of
  * fabricating a manifest, reputation, or job, which would be exactly the
- * kind of faked integration AGENTS.md rules out. Swap this for the real
- * `createAssayNode` in `index.ts`'s `main()` once it exists.
+ * kind of faked integration AGENTS.md rules out.
+ *
+ * As of issue #46, `index.ts`'s `main()` no longer uses this: it builds
+ * `createLiveAssayNode` (`live-node.ts`) over real Hedera/Sepolia/Graph
+ * adapters instead. This class stays around, and stays exported, for the
+ * same honest reason it existed before: something to boot the server against
+ * with zero live credentials (e.g. a quick `listTools` check) without ever
+ * faking a result.
  */
 export class NotWiredAssayNode implements AssayNodePort {
-  async discover(_capabilityId: string): Promise<ProviderRecord> {
+  async discover(_capabilityId: string): Promise<DiscoverResult> {
     throw new NodeNotWiredError('discover');
   }
 
-  async payAndCall(_capabilityId: string, _request: unknown): Promise<Job> {
+  async payAndCall(_capabilityId: string, _request: unknown, _force?: boolean): Promise<Job> {
     throw new NodeNotWiredError('pay_and_call');
   }
 
