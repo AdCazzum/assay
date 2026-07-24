@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@assay/core": "workspace:*",
+    "@assay/payments": "workspace:*",
     "ethers": "^6.17.0"
   }
 }
