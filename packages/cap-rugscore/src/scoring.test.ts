@@ -22,20 +22,15 @@ describe('scoreRugPullRisk (pure)', () => {
     }
   });
 
-  it('returns exactly the four claim keys required by SPEC.md §6, carrying the input values', () => {
+  it('returns exactly the five claim keys backed by real TokenSignals fields, carrying the input values', () => {
     const { claims } = scoreRugPullRisk(RUG_TOKEN_SIGNALS);
     expect(claims).toEqual([
-      { k: 'top10Pct', v: RUG_TOKEN_SIGNALS.top10Pct },
       { k: 'liquidityUsd', v: RUG_TOKEN_SIGNALS.liquidityUsd },
       { k: 'ageBlocks', v: RUG_TOKEN_SIGNALS.ageBlocks },
-      { k: 'hasActiveMintRole', v: RUG_TOKEN_SIGNALS.hasActiveMintRole },
+      { k: 'txCount', v: RUG_TOKEN_SIGNALS.txCount },
+      { k: 'volumeUsd', v: RUG_TOKEN_SIGNALS.volumeUsd },
+      { k: 'topPoolConcentrationPct', v: RUG_TOKEN_SIGNALS.topPoolConcentrationPct },
     ]);
-  });
-
-  it('is monotonic: higher top10 concentration alone never lowers the score', () => {
-    const base = scoreRugPullRisk({ ...CLEAN_TOKEN_SIGNALS, top10Pct: 10 });
-    const concentrated = scoreRugPullRisk({ ...CLEAN_TOKEN_SIGNALS, top10Pct: 90 });
-    expect(concentrated.score).toBeGreaterThan(base.score);
   });
 
   it('is monotonic: thinner liquidity alone never lowers the score', () => {
@@ -50,10 +45,36 @@ describe('scoreRugPullRisk (pure)', () => {
     expect(young.score).toBeGreaterThan(old.score);
   });
 
-  it('an active mint role alone adds risk, all else equal', () => {
-    const withoutMint = scoreRugPullRisk({ ...CLEAN_TOKEN_SIGNALS, hasActiveMintRole: false });
-    const withMint = scoreRugPullRisk({ ...CLEAN_TOKEN_SIGNALS, hasActiveMintRole: true });
-    expect(withMint.score).toBeGreaterThan(withoutMint.score);
+  it('is monotonic: a lower txCount alone never lowers the score', () => {
+    const active = scoreRugPullRisk({ ...CLEAN_TOKEN_SIGNALS, txCount: 1_000_000 });
+    const inactive = scoreRugPullRisk({ ...CLEAN_TOKEN_SIGNALS, txCount: 3 });
+    expect(inactive.score).toBeGreaterThan(active.score);
+  });
+
+  it('is monotonic: lower cumulative volume alone never lowers the score', () => {
+    const traded = scoreRugPullRisk({ ...CLEAN_TOKEN_SIGNALS, volumeUsd: 10_000_000 });
+    const untraded = scoreRugPullRisk({ ...CLEAN_TOKEN_SIGNALS, volumeUsd: 0 });
+    expect(untraded.score).toBeGreaterThan(traded.score);
+  });
+
+  it('is monotonic: higher top-pool concentration alone never lowers the score', () => {
+    const spread = scoreRugPullRisk({ ...CLEAN_TOKEN_SIGNALS, topPoolConcentrationPct: 20 });
+    const concentrated = scoreRugPullRisk({ ...CLEAN_TOKEN_SIGNALS, topPoolConcentrationPct: 100 });
+    expect(concentrated.score).toBeGreaterThan(spread.score);
+  });
+
+  it('treats an unobserved liquidity/age/concentration signal (NaN — no pool existed yet) as maximally risky, not zero risk', () => {
+    const neverTraded = scoreRugPullRisk({
+      ...CLEAN_TOKEN_SIGNALS,
+      liquidityUsd: NaN,
+      ageBlocks: NaN,
+      topPoolConcentrationPct: NaN,
+    });
+    // liquidityUsd (30) + ageBlocks (20) + topPoolConcentrationPct (20) all
+    // max out their weight when unobserved; txCount/volumeUsd are untouched
+    // (still clean, contributing 0), so this is the ceiling for this mix,
+    // not full 100 — but still nowhere near a "no risk" reading.
+    expect(neverTraded.score).toBe(70);
   });
 
   it('is pure: same input always yields the same output', () => {

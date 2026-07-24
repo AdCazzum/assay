@@ -49,7 +49,9 @@ describe('createRugScoreCapability().run', () => {
     const { claims } = await capability.run(RUG_TOKEN);
 
     const keys = claims.map((c) => c.k).sort();
-    expect(keys).toEqual(['ageBlocks', 'hasActiveMintRole', 'liquidityUsd', 'top10Pct'].sort());
+    expect(keys).toEqual(
+      ['liquidityUsd', 'ageBlocks', 'txCount', 'volumeUsd', 'topPoolConcentrationPct'].sort(),
+    );
     for (const claim of claims) {
       expect(claim.atBlock).toBe(555);
     }
@@ -68,10 +70,11 @@ describe('createRugScoreCapability().run', () => {
 
     const byKey = Object.fromEntries(claims.map((c) => [c.k, c.v]));
     expect(byKey).toEqual({
-      top10Pct: RUG_TOKEN_SIGNALS.top10Pct,
       liquidityUsd: RUG_TOKEN_SIGNALS.liquidityUsd,
       ageBlocks: RUG_TOKEN_SIGNALS.ageBlocks,
-      hasActiveMintRole: RUG_TOKEN_SIGNALS.hasActiveMintRole,
+      txCount: RUG_TOKEN_SIGNALS.txCount,
+      volumeUsd: RUG_TOKEN_SIGNALS.volumeUsd,
+      topPoolConcentrationPct: RUG_TOKEN_SIGNALS.topPoolConcentrationPct,
     });
   });
 

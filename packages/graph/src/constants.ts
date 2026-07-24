@@ -33,12 +33,13 @@ export function normalizeTokenAddress(token: string): string {
 }
 
 /**
- * `TokenSignals` fields this adapter cannot honestly source from a
- * block-pinned subgraph query in this scope (see README.md "What is left
- * unimplemented, and why"). Exported so a consumer can filter them out
- * programmatically instead of guessing from a sentinel value. Numeric fields
- * in this list are always `NaN`; `hasActiveMintRole` is always `false`. A
- * test in `adapter.test.ts` asserts the returned object actually matches
- * this list, so the two cannot silently drift apart.
+ * How many pools (ordered by `totalValueLockedUSD` descending) this adapter
+ * samples to compute `topPoolConcentrationPct`. Bounded on purpose: an exact
+ * concentration figure across *every* pool a blue-chip token trades on would
+ * need paginating past the gateway's 1000-row cap per query (confirmed live
+ * against USDC — see README.md "topPoolConcentrationPct"), which breaks the
+ * cost asymmetry SPEC.md §3 requires (verifying one claim must stay a single
+ * cheap query). Sampling the top 5 keeps the query cheap and is disclosed as
+ * a bound, the same honesty trade-off `ageBlocks` already makes.
  */
-export const UNIMPLEMENTED_SIGNAL_KEYS = ['holders', 'top10Pct', 'transfers', 'hasActiveMintRole'] as const;
+export const TOP_POOLS_SAMPLE_SIZE = 5;

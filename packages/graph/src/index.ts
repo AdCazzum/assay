@@ -16,7 +16,7 @@ export {
 } from './errors.js';
 export {
   normalizeTokenAddress,
-  UNIMPLEMENTED_SIGNAL_KEYS,
+  TOP_POOLS_SAMPLE_SIZE,
   UNISWAP_V3_MAINNET_START_BLOCK,
   UNISWAP_V3_MAINNET_SUBGRAPH_ID,
 } from './constants.js';
