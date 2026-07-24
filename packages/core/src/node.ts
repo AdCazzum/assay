@@ -14,8 +14,15 @@
  */
 
 import { createHash } from 'node:crypto';
+import { assessProvider, type ProviderAssessment } from './assessment.js';
 import { createJobStore, type JobStore } from './job-store.js';
 import type { GraphPort, PaymentsPort, RegistryPort } from './ports.js';
+import {
+  DEFAULT_PAY_DECISION_POLICY,
+  evaluatePayDecision,
+  PayDeclinedError,
+  type PayDecisionPolicyConfig,
+} from './pay-policy.js';
 import type { CapabilityRegistry } from './runtime.js';
 import type { Job, Manifest, ProviderRecord, Verdict } from './types.js';
 
@@ -51,6 +58,17 @@ export type AssayNodeConfig = {
   capabilities: CapabilityRegistry;
   /** Overridable so callers (and tests) can inject or inspect the job store. Defaults to a fresh in-memory one. */
   jobs?: JobStore;
+  /**
+   * The pay/decline floor `payAndCall` applies to `discover()`'s result
+   * before it ever calls `payments.pay()` (issue #21, SPEC.md §16 risk 5).
+   * This is a fallback for non-agent callers, not the demo's actual
+   * reasoning: a real agent driving the loop via MCP (#46) reads the
+   * `ProviderAssessment` itself and reasons out loud, using `assess()` below
+   * for material rather than being bound by this policy's verdict. Defaults
+   * to `DEFAULT_PAY_DECISION_POLICY`; every threshold on it is documented as
+   * tunable in `pay-policy.ts`.
+   */
+  payPolicy?: PayDecisionPolicyConfig;
 };
 
 export type RegisterInput = {
@@ -90,10 +108,20 @@ export interface AssayNode {
   /** Resolves `name` on the registry: manifest + reputation, for a requester to reason over before paying. */
   discover(name: string): Promise<ProviderRecord>;
   /**
-   * Pays `capabilityId`'s price on `name`, then serves it. Never resolves to
-   * a job unless the payment actually confirms: an unconfirmed or failed
-   * payment rejects with `PaymentNotConfirmedError` from `serve()` below, and
-   * no job is ever created.
+   * `discover(name)` plus the structured risk read over it (issue #21): the
+   * material an agent (via the MCP `discover` tool, #46) or a human reasons
+   * over to decide whether the price is worth the reputation, without this
+   * function collapsing that judgment into a verdict itself. See
+   * `assessment.ts`.
+   */
+  assess(name: string): Promise<ProviderAssessment>;
+  /**
+   * Pays `capabilityId`'s price on `name`, then serves it. Two ways this can
+   * refuse to pay: `evaluatePayDecision` (this node's `payPolicy`) declines
+   * `name`'s assessment before any payment is attempted, rejecting with
+   * `PayDeclinedError` and never calling `payments.pay()`; or the payment is
+   * attempted but never confirms, rejecting with `PaymentNotConfirmedError`
+   * from `serve()` below. Either way, no job is ever created.
    */
   payAndCall(name: string, capabilityId: string, request: unknown): Promise<PayAndCallResult>;
   /**
@@ -125,6 +153,7 @@ function hashRequest(capabilityId: string, request: unknown): string {
 export function createAssayNode(config: AssayNodeConfig): AssayNode {
   const { registry, payments, capabilities } = config;
   const jobs = config.jobs ?? createJobStore();
+  const payPolicy = config.payPolicy ?? DEFAULT_PAY_DECISION_POLICY;
 
   async function serve(input: ServeInput): Promise<Job> {
     const confirmed = await payments.confirm(input.txId);
@@ -152,8 +181,18 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
       return registry.resolveProvider(name);
     },
 
+    async assess(name) {
+      const provider = await registry.resolveProvider(name);
+      return assessProvider(provider);
+    },
+
     async payAndCall(name, capabilityId, request) {
       const provider = await registry.resolveProvider(name);
+      const assessment = assessProvider(provider);
+      const decision = evaluatePayDecision(assessment, payPolicy);
+      if (!decision.pay) {
+        throw new PayDeclinedError(name, assessment, decision.reason, decision.violations);
+      }
       const requestHash = hashRequest(capabilityId, request);
       const { txId } = await payments.pay(provider.manifest.priceHbar, requestHash);
       const job = await serve({ provider: name, capabilityId, request, txId });

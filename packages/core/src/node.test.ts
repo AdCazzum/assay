@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createAssayNode, PaymentNotConfirmedError } from './node.js';
+import { PayDeclinedError } from './pay-policy.js';
 import { createCapabilityRegistry } from './runtime.js';
 import {
   FakeGraphPort,
@@ -7,7 +8,7 @@ import {
   FakeRegistryPort,
   type FakePaymentsPortOptions,
 } from './test-support/fakes.js';
-import type { Capability, Manifest, ProviderRecord } from './types.js';
+import type { Capability, Manifest, ProviderRecord, Reputation } from './types.js';
 
 const PROVIDER_NAME = 'rugscore.assay.eth';
 
@@ -43,8 +44,14 @@ const echoCapability: Capability<string, { echoed: string }> = {
   },
 };
 
-function buildNode(paymentsOpts?: FakePaymentsPortOptions) {
-  const registry = new FakeRegistryPort().seed(PROVIDER_NAME, seedRecord);
+function buildNode(
+  paymentsOpts?: FakePaymentsPortOptions,
+  reputation: Partial<Reputation> = {},
+) {
+  const registry = new FakeRegistryPort().seed(PROVIDER_NAME, {
+    manifest,
+    reputation: { ...seedRecord.reputation, ...reputation },
+  });
   const payments = new FakePaymentsPort(paymentsOpts);
   const graph = new FakeGraphPort();
   const capabilities = createCapabilityRegistry();
@@ -138,6 +145,89 @@ describe('createAssayNode', () => {
     expect(result.bondRef).toMatch(/^fake-bond-/);
     expect(registry.publishedManifests).toEqual([{ name: PROVIDER_NAME, manifest }]);
     expect(payments.postBondCalls).toEqual([50]);
+  });
+
+  it('assess() gives discover()\'s record back with a structured risk read, without deciding for the caller', async () => {
+    const { node } = buildNode();
+
+    const assessment = await node.assess(PROVIDER_NAME);
+
+    expect(assessment.providerName).toBe(PROVIDER_NAME);
+    expect(assessment.jobs).toBe(3);
+    expect(assessment.slashes).toBe(0);
+    expect(assessment.unproven).toBe(false);
+    expect(assessment.signals.length).toBeGreaterThan(0);
+  });
+
+  it('payAndCall pays a provider with a clean record and a fair price (the pay policy floor is satisfied)', async () => {
+    const { node, payments } = buildNode(undefined, { jobs: 20, slashes: 0, bondHbar: 50 });
+
+    const { job } = await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+
+    expect(job.status).toBe('served');
+    expect(payments.payCalls).toHaveLength(1);
+  });
+
+  it('payAndCall declines a provider with slashes against few jobs, naming the reason, and never pays', async () => {
+    const { node, payments } = buildNode(undefined, { jobs: 4, slashes: 2, bondHbar: 50 });
+
+    await expect(node.payAndCall(PROVIDER_NAME, 'echo', 'hello')).rejects.toThrow(PayDeclinedError);
+
+    try {
+      await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(PayDeclinedError);
+      const decline = err as PayDeclinedError;
+      expect(decline.providerName).toBe(PROVIDER_NAME);
+      expect(decline.message).toMatch(/slash/i);
+      expect(decline.assessment.slashRatio).toBeCloseTo(0.5);
+    }
+
+    // the decline happened before any payment was ever attempted
+    expect(payments.payCalls).toHaveLength(0);
+    expect(node.jobs.list()).toEqual([]);
+  });
+
+  it('payAndCall declines when the bond is far smaller than the price, even with a clean record', async () => {
+    const { node, payments } = buildNode(undefined, { jobs: 20, slashes: 0, bondHbar: 1 });
+
+    await expect(node.payAndCall(PROVIDER_NAME, 'echo', 'hello')).rejects.toThrow(PayDeclinedError);
+    expect(payments.payCalls).toHaveLength(0);
+  });
+
+  it('an unproven (0-job) provider is not silently treated as good: it is distinguishable in the assessment, even though the default policy pays it given a strong bond', async () => {
+    const { node } = buildNode(undefined, { jobs: 0, slashes: 0, bondHbar: 50 });
+
+    const assessment = await node.assess(PROVIDER_NAME);
+    expect(assessment.unproven).toBe(true);
+    expect(assessment.slashRatio).toBeNull();
+
+    const { job } = await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+    expect(job.status).toBe('served');
+  });
+
+  it('an injected payPolicy overrides the default floor', async () => {
+    const registry = new FakeRegistryPort().seed(PROVIDER_NAME, {
+      manifest,
+      reputation: { score: 80, jobs: 100, slashes: 1, bondHbar: 50 },
+    });
+    const payments = new FakePaymentsPort();
+    const graph = new FakeGraphPort();
+    const capabilities = createCapabilityRegistry();
+    capabilities.register(echoCapability);
+
+    // slash ratio 0.01 passes the default policy (max 0.15) but not a
+    // caller-injected, stricter one
+    const node = createAssayNode({
+      registry,
+      payments,
+      graph,
+      capabilities,
+      payPolicy: { maxSlashRatio: 0.005, minBondToPriceRatio: 2 },
+    });
+
+    await expect(node.payAndCall(PROVIDER_NAME, 'echo', 'hello')).rejects.toThrow(PayDeclinedError);
   });
 
   it('leaves challenge/settle as explicit extension points for #26/#27, not half-implementations', async () => {
