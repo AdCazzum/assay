@@ -16,6 +16,24 @@
 import { AbstractProvider, Contract, JsonRpcProvider, Wallet, namehash } from 'ethers';
 import { NoResolverConfiguredError } from './errors.js';
 
+/**
+ * Progress ticks for a `setText` write. Mirrors `@assay/payments`'
+ * `onConfirmAttempt`/`MirrorNodePollAttempt` shape on purpose (see
+ * `mirror-node.ts`): same idea — a slow on-chain confirmation is observable
+ * instead of a single black-box `await`, so a caller (the dashboard) can show
+ * "in flight" rather than freezing for the ~24s an ENS write takes (#53).
+ *
+ * `'submitted'` fires once, right after the transaction is broadcast (the
+ * tx hash is already known). `'pending'` fires on a heartbeat while waiting
+ * for it to be mined. `'confirmed'` fires once, after the receipt lands.
+ */
+export type EnsWriteAttemptState = 'submitted' | 'pending' | 'confirmed';
+
+export type EnsWriteAttempt = {
+  state: EnsWriteAttemptState;
+  elapsedMs: number;
+};
+
 export interface EnsResolverGateway {
   /**
    * Reads text record `key` for `name`. Returns `null` if the resolver has
@@ -26,8 +44,17 @@ export interface EnsResolverGateway {
   /**
    * Writes text record `key` for `name` and waits for the transaction to be
    * mined. Throws `NoResolverConfiguredError` if `name` has no resolver.
+   *
+   * `onAttempt`, when given, is called as the write progresses (see
+   * `EnsWriteAttempt`) so a slow confirmation is observable rather than a
+   * single opaque `await`.
    */
-  setText(name: string, key: string, value: string): Promise<{ txHash: string }>;
+  setText(
+    name: string,
+    key: string,
+    value: string,
+    onAttempt?: (info: EnsWriteAttempt) => void,
+  ): Promise<{ txHash: string }>;
 }
 
 /**
@@ -57,11 +84,16 @@ export interface CreateEthersEnsGatewayOptions {
   privateKey: string;
   /** Overrides the ethers provider (e.g. a already-connected one). Rarely needed. */
   provider?: AbstractProvider;
+  /** Heartbeat interval for `onAttempt`'s `'pending'` ticks while a write is mining. Default 3s. */
+  writeHeartbeatMs?: number;
 }
+
+const DEFAULT_WRITE_HEARTBEAT_MS = 3_000;
 
 export function createEthersEnsGateway(opts: CreateEthersEnsGatewayOptions): EnsResolverGateway {
   const provider = opts.provider ?? new JsonRpcProvider(opts.rpcUrl, SEPOLIA_CHAIN_ID);
   const signer = new Wallet(opts.privateKey, provider);
+  const heartbeatMs = opts.writeHeartbeatMs ?? DEFAULT_WRITE_HEARTBEAT_MS;
 
   return {
     async getText(name, key) {
@@ -72,15 +104,32 @@ export function createEthersEnsGateway(opts: CreateEthersEnsGatewayOptions): Ens
       return resolver.getText(key);
     },
 
-    async setText(name, key, value) {
+    async setText(name, key, value, onAttempt) {
       const resolver = await provider.getResolver(name);
       if (!resolver) {
         throw new NoResolverConfiguredError(name);
       }
       const writable = new Contract(resolver.address, TEXT_RESOLVER_ABI, signer);
+      const start = Date.now();
+
       const tx = await writable.setText(namehash(name), key, value);
-      const receipt = await tx.wait();
-      return { txHash: receipt?.hash ?? tx.hash };
+      onAttempt?.({ state: 'submitted', elapsedMs: Date.now() - start });
+
+      // ethers' own `tx.wait()` already handles the actual poll-for-receipt
+      // logic (reorg-safe, robust); this heartbeat just runs alongside it so
+      // `onAttempt` fires periodically during the wait instead of only
+      // before and after it, matching `pollMirrorNode`'s per-attempt ticks.
+      const heartbeat = onAttempt
+        ? setInterval(() => onAttempt({ state: 'pending', elapsedMs: Date.now() - start }), heartbeatMs)
+        : undefined;
+
+      try {
+        const receipt = await tx.wait();
+        onAttempt?.({ state: 'confirmed', elapsedMs: Date.now() - start });
+        return { txHash: receipt?.hash ?? tx.hash };
+      } finally {
+        if (heartbeat) clearInterval(heartbeat);
+      }
     },
   };
 }

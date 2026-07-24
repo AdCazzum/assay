@@ -7,7 +7,7 @@
  */
 
 import { NoResolverConfiguredError } from './errors.js';
-import type { EnsResolverGateway } from './ens-gateway.js';
+import type { EnsResolverGateway, EnsWriteAttempt } from './ens-gateway.js';
 
 export class FakeEnsResolverGateway implements EnsResolverGateway {
   private readonly records = new Map<string, Map<string, string>>();
@@ -33,12 +33,24 @@ export class FakeEnsResolverGateway implements EnsResolverGateway {
     return this.recordsFor(name).get(key) ?? null;
   }
 
-  async setText(name: string, key: string, value: string): Promise<{ txHash: string }> {
+  async setText(
+    name: string,
+    key: string,
+    value: string,
+    onAttempt?: (info: EnsWriteAttempt) => void,
+  ): Promise<{ txHash: string }> {
     if (this.namesWithoutResolver.has(name)) {
       throw new NoResolverConfiguredError(name);
     }
+    // No real chain here, so there is nothing to be genuinely "pending" on;
+    // still fire the same 'submitted' -> 'confirmed' sequence a real write
+    // would (see `createEthersEnsGateway`), so a caller wiring up
+    // `onAttempt` can be unit-tested against this fake instead of only ever
+    // exercised live against Sepolia.
+    onAttempt?.({ state: 'submitted', elapsedMs: 0 });
     this.recordsFor(name).set(key, value);
     this.txCounter += 1;
+    onAttempt?.({ state: 'confirmed', elapsedMs: 0 });
     return { txHash: `0xfake${this.txCounter}` };
   }
 
