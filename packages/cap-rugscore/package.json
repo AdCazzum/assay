@@ -10,7 +10,8 @@
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "smoke": "tsx scripts/smoke.ts"
   },
   "dependencies": {
     "@assay/core": "workspace:*",
