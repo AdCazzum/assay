@@ -1,16 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { createAssayNode, PaymentNotConfirmedError } from './node.js';
+import {
+  createAssayNode,
+  JobNotChallengeableError,
+  JobNotSettleableError,
+  MissingChallengerAccountError,
+  PaymentNotConfirmedError,
+  ReputationUpdateFailedError,
+  UnknownClaimError,
+} from './node.js';
 import { PayDeclinedError } from './pay-policy.js';
 import { createCapabilityRegistry } from './runtime.js';
+import { computeChallengeFailedReputationDelta, computeSlashReputationDelta } from './settlement-policy.js';
 import {
   FakeGraphPort,
   FakePaymentsPort,
   FakeRegistryPort,
   type FakePaymentsPortOptions,
 } from './test-support/fakes.js';
-import type { Capability, Manifest, ProviderRecord, Reputation } from './types.js';
+import type { Capability, Manifest, ProviderRecord, Reputation, Verdict } from './types.js';
 
 const PROVIDER_NAME = 'rugscore.assay.eth';
+const CHALLENGER_ACCOUNT_ID = '0.0.999999';
 
 const manifest: Manifest = {
   capabilityId: 'echo',
@@ -26,23 +36,29 @@ const seedRecord: Omit<ProviderRecord, 'name'> = {
   reputation: { score: 80, jobs: 3, slashes: 0, bondHbar: 50 },
 };
 
+type EchoVerify = Capability<string, { echoed: string }>['verify'];
+
 /**
  * A trivial capability whose result carries one block-stamped claim, so the
  * loop test can assert claims survive intact into the job. Not rug-score:
- * core must not know that capability exists.
+ * core must not know that capability exists. `verify` is injectable so the
+ * challenge/settle tests below can drive both a true and a lying verdict
+ * without a second capability.
  */
-const echoCapability: Capability<string, { echoed: string }> = {
-  id: 'echo',
-  async run(req) {
-    return {
-      result: { echoed: req },
-      claims: [{ k: 'echoedLength', v: req.length, atBlock: 12345 }],
-    };
-  },
-  async verify() {
-    return { valid: true };
-  },
-};
+function makeEchoCapability(verify?: EchoVerify): Capability<string, { echoed: string }> {
+  return {
+    id: 'echo',
+    async run(req) {
+      return {
+        result: { echoed: req },
+        claims: [{ k: 'echoedLength', v: req.length, atBlock: 12345 }],
+      };
+    },
+    verify: verify ?? (async () => ({ valid: true })),
+  };
+}
+
+const echoCapability = makeEchoCapability();
 
 function buildNode(
   paymentsOpts?: FakePaymentsPortOptions,
@@ -59,6 +75,40 @@ function buildNode(
 
   const node = createAssayNode({ registry, payments, graph, capabilities });
   return { node, registry, payments, graph, capabilities };
+}
+
+/**
+ * Builds a node already carrying one served job, ready to be challenged, plus
+ * whatever ports the challenge/settle tests need to inspect or fail on
+ * purpose (`registry`/`payments` are the real fakes, not stand-ins for
+ * `verify()` — that piece is #12's, driven here by `opts.verify`).
+ */
+async function buildServedNode(
+  opts: {
+    verify?: EchoVerify;
+    reputation?: Partial<Reputation>;
+    challengerAccountId?: string | null;
+  } = {},
+) {
+  const registry = new FakeRegistryPort().seed(PROVIDER_NAME, {
+    manifest,
+    reputation: { ...seedRecord.reputation, ...opts.reputation },
+  });
+  const payments = new FakePaymentsPort();
+  const graph = new FakeGraphPort();
+  const capabilities = createCapabilityRegistry();
+  capabilities.register(makeEchoCapability(opts.verify));
+
+  const node = createAssayNode({
+    registry,
+    payments,
+    graph,
+    capabilities,
+    challengerAccountId: opts.challengerAccountId === null ? undefined : (opts.challengerAccountId ?? CHALLENGER_ACCOUNT_ID),
+  });
+
+  const { job } = await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+  return { node, registry, payments, graph, job };
 }
 
 describe('createAssayNode', () => {
@@ -230,14 +280,188 @@ describe('createAssayNode', () => {
     await expect(node.payAndCall(PROVIDER_NAME, 'echo', 'hello')).rejects.toThrow(PayDeclinedError);
   });
 
-  it('leaves challenge/settle as explicit extension points for #26/#27, not half-implementations', async () => {
-    const { node } = buildNode();
-    const { job } = await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+});
 
-    await expect(node.challenge(job.jobId, 'echoedLength')).rejects.toThrow(/#26/);
-    await expect(node.settle(job.jobId, { valid: false })).rejects.toThrow(/#27/);
+describe('createAssayNode: challenge (#26)', () => {
+  it('routes to the capability\'s verify() with the full claim set and moves served -> challenged, recording the verdict', async () => {
+    let calledWith: unknown;
+    const verdict: Verdict = { valid: true };
+    const { node, job } = await buildServedNode({
+      verify: async (req, result, claims) => {
+        calledWith = { req, result, claims };
+        return verdict;
+      },
+    });
 
-    // neither extension point silently mutated the job
+    const returned = await node.challenge(job.jobId, 'echoedLength');
+
+    expect(returned).toEqual(verdict);
+    expect(calledWith).toEqual({ req: 'hello', result: { echoed: 'hello' }, claims: job.claims });
+
+    const updated = node.jobs.get(job.jobId);
+    expect(updated.status).toBe('challenged');
+    expect(updated.verdict).toEqual(verdict);
+  });
+
+  it('rejects an unknown claim key without ever calling verify()', async () => {
+    let verifyCalls = 0;
+    const { node, job } = await buildServedNode({
+      verify: async () => {
+        verifyCalls += 1;
+        return { valid: true };
+      },
+    });
+
+    await expect(node.challenge(job.jobId, 'noSuchClaim')).rejects.toThrow(UnknownClaimError);
+    expect(verifyCalls).toBe(0);
     expect(node.jobs.get(job.jobId).status).toBe('served');
+  });
+
+  it('rejects re-challenging a job that already moved past served, without calling verify() again', async () => {
+    let verifyCalls = 0;
+    const { node, job } = await buildServedNode({
+      verify: async () => {
+        verifyCalls += 1;
+        return { valid: true };
+      },
+    });
+
+    await node.challenge(job.jobId, 'echoedLength');
+    expect(verifyCalls).toBe(1);
+
+    await expect(node.challenge(job.jobId, 'echoedLength')).rejects.toThrow(JobNotChallengeableError);
+    expect(verifyCalls).toBe(1);
+  });
+
+  it("propagates the capability's own verify() failure and leaves the job at served, so it stays retryable", async () => {
+    const { node, job } = await buildServedNode({
+      verify: async () => {
+        throw new Error('The Graph is unreachable at this block');
+      },
+    });
+
+    await expect(node.challenge(job.jobId, 'echoedLength')).rejects.toThrow(/unreachable/);
+    expect(node.jobs.get(job.jobId).status).toBe('served');
+  });
+
+  it('rejects an unknown job id', async () => {
+    const { node } = buildNode();
+    await expect(node.challenge('no-such-job', 'echoedLength')).rejects.toThrow(/Unknown job/);
+  });
+});
+
+describe('createAssayNode: settle (#27)', () => {
+  const lieVerdict: Verdict = { valid: false, badClaim: 'echoedLength', reason: 'the length was fabricated' };
+  const trueVerdict: Verdict = { valid: true };
+
+  it('an invalid verdict slashes the bond to the challenger and drops the provider\'s ENS reputation, moving the job to slashed', async () => {
+    const { node, registry, payments, job } = await buildServedNode({
+      verify: async () => lieVerdict,
+      reputation: { score: 80, jobs: 3, slashes: 0, bondHbar: 50 },
+    });
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+
+    const settled = await node.settle(job.jobId, verdict);
+
+    expect(payments.slashCalls).toEqual([
+      { bondRef: manifest.bondRef, toChallenger: CHALLENGER_ACCOUNT_ID },
+    ]);
+    expect(settled.status).toBe('slashed');
+    expect(settled.verdict).toEqual(lieVerdict);
+
+    const expectedDelta = computeSlashReputationDelta({ score: 80, jobs: 3, slashes: 0, bondHbar: 50 });
+    const updated = await registry.resolveProvider(PROVIDER_NAME);
+    expect(updated.reputation).toEqual({ ...expectedDelta, bondHbar: 50 });
+    expect(updated.reputation.score).toBeLessThan(80);
+    expect(updated.reputation.slashes).toBe(1);
+  });
+
+  it('a valid verdict fails the challenge, raises the provider\'s reputation, and never slashes, moving the job to settled', async () => {
+    const { node, registry, payments, job } = await buildServedNode({
+      verify: async () => trueVerdict,
+      reputation: { score: 80, jobs: 3, slashes: 0, bondHbar: 50 },
+    });
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+
+    const settled = await node.settle(job.jobId, verdict);
+
+    expect(payments.slashCalls).toEqual([]);
+    expect(settled.status).toBe('settled');
+    expect(settled.verdict).toEqual(trueVerdict);
+
+    const expectedDelta = computeChallengeFailedReputationDelta({
+      score: 80,
+      jobs: 3,
+      slashes: 0,
+      bondHbar: 50,
+    });
+    const updated = await registry.resolveProvider(PROVIDER_NAME);
+    expect(updated.reputation).toEqual({ ...expectedDelta, slashes: 0, bondHbar: 50 });
+    expect(updated.reputation.score).toBeGreaterThan(80);
+  });
+
+  it('rejects settling a job that was never challenged (still served)', async () => {
+    const { node, job } = await buildServedNode();
+
+    await expect(node.settle(job.jobId, trueVerdict)).rejects.toThrow(JobNotSettleableError);
+  });
+
+  it('double-settle is rejected and does not slash twice', async () => {
+    const { node, payments, job } = await buildServedNode({ verify: async () => lieVerdict });
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+
+    await node.settle(job.jobId, verdict);
+    expect(payments.slashCalls).toHaveLength(1);
+
+    await expect(node.settle(job.jobId, verdict)).rejects.toThrow(JobNotSettleableError);
+    expect(payments.slashCalls).toHaveLength(1);
+  });
+
+  it('refuses to settle an invalid verdict with no challengerAccountId configured, before ever attempting a slash', async () => {
+    const { node, payments, job } = await buildServedNode({
+      verify: async () => lieVerdict,
+      challengerAccountId: null,
+    });
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+
+    await expect(node.settle(job.jobId, verdict)).rejects.toThrow(MissingChallengerAccountError);
+    expect(payments.slashCalls).toEqual([]);
+    // the job is still challenged, not stuck in some invented state: a retry after configuring
+    // challengerAccountId is safe
+    expect(node.jobs.get(job.jobId).status).toBe('challenged');
+  });
+
+  it('the partial-failure path: the slash lands for real but the ENS reputation write then fails, leaving the job truthfully "slashed" rather than an invented in-between state', async () => {
+    const { node, registry, payments, job } = await buildServedNode({ verify: async () => lieVerdict });
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+    registry.updateReputationError = new Error('Sepolia RPC timed out');
+
+    await expect(node.settle(job.jobId, verdict)).rejects.toThrow(ReputationUpdateFailedError);
+
+    // the money moved: the slash really happened
+    expect(payments.slashCalls).toHaveLength(1);
+    // and the job says so honestly, even though the reputation write failed
+    expect(node.jobs.get(job.jobId).status).toBe('slashed');
+    expect(node.jobs.get(job.jobId).verdict).toEqual(lieVerdict);
+  });
+
+  it('when the slash transaction itself fails, nothing is recorded and the job stays challenged, safe to retry', async () => {
+    const { node, payments, job } = await buildServedNode({ verify: async () => lieVerdict });
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+    payments.slashError = new Error('Hedera testnet is congested');
+
+    await expect(node.settle(job.jobId, verdict)).rejects.toThrow(/congested/);
+
+    expect(node.jobs.get(job.jobId).status).toBe('challenged');
+
+    // and the retry (slashError cleared itself after firing once) succeeds cleanly
+    const settled = await node.settle(job.jobId, verdict);
+    expect(settled.status).toBe('slashed');
+    expect(payments.slashCalls).toHaveLength(2);
+  });
+
+  it('rejects an unknown job id', async () => {
+    const { node } = buildNode();
+    await expect(node.settle('no-such-job', trueVerdict)).rejects.toThrow(/Unknown job/);
   });
 });

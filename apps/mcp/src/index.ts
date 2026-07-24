@@ -121,6 +121,12 @@ export function buildLiveNodeFromEnv(): AssayNodePort {
   // account is provisioned.
   const payToAccountId = process.env.HEDERA_PAY_TO_ACCOUNT_ID || env.HEDERA_OPERATOR_ID;
   const bondAccountId = process.env.HEDERA_BOND_ACCOUNT_ID || env.HEDERA_OPERATOR_ID;
+  // Same disclosed simplification as `payToAccountId`/`bondAccountId` above:
+  // the watchdog challenging a claim is, in this single-operator build, the
+  // same funded testnet account as everyone else (see
+  // `packages/core`'s `AssayNodeConfig.challengerAccountId` doc comment and
+  // `packages/payments/scripts/bond-slash.ts`).
+  const challengerAccountId = process.env.HEDERA_CHALLENGER_ACCOUNT_ID || env.HEDERA_OPERATOR_ID;
   const mirrorNodeBaseUrl = process.env.HEDERA_MIRROR_NODE_URL || MIRROR_NODE_BASE_URL[network];
 
   const payments = createHederaPaymentsPort({
@@ -136,7 +142,7 @@ export function buildLiveNodeFromEnv(): AssayNodePort {
   const capabilities = createCapabilityRegistry();
   capabilities.register(createRugScoreCapability({ graph }));
 
-  return createLiveAssayNode({ registry, payments, graph, capabilities });
+  return createLiveAssayNode({ registry, payments, graph, capabilities, challengerAccountId });
 }
 
 async function main(): Promise<void> {

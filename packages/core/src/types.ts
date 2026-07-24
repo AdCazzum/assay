@@ -67,6 +67,13 @@ export type JobStatus = 'served' | 'challenged' | 'slashed' | 'settled';
 export type Job = {
   jobId: string;
   provider: string;
+  /**
+   * The capability registry id this job ran (e.g. `"rugscore"`). Stored on
+   * the job, not just passed to `serve()`, because `challenge()` (#26) needs
+   * it later to route back through the same capability's `verify()` without
+   * the core having to guess or re-resolve it from the manifest.
+   */
+  capabilityId: string;
   request: unknown;
   paymentTx: string;
   result: unknown;

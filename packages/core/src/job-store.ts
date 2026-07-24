@@ -6,9 +6,24 @@
  * A job is only ever created already `served`: SPEC.md §12 puts the payment
  * gate in `serve()` (see node.ts), and a job that failed the gate never
  * reaches this store at all. So `served` is the one legal starting state.
- * From there a job can only move forward: to `challenged`, and from
- * `challenged` to one of the two terminal outcomes, `slashed` or `settled`.
- * Every other move (skipping `challenged`, moving out of a terminal state,
+ * From there a job can take one of two forward paths:
+ *
+ *  - **Adversarial**: `served -> challenged` (see `node.ts`'s `challenge()`),
+ *    then `challenged -> slashed` or `challenged -> settled` depending on the
+ *    verifier's verdict (`node.ts`'s `settle()`).
+ *  - **Non-adversarial**: `served -> settled` directly, with no `verdict`.
+ *    This is the close-out for a served job nobody disputed (`apps/mcp`'s
+ *    `rate` tool surfaced this gap: without it, an accepted-and-rated job had
+ *    no terminal status and stayed `served` forever, which is not honest —
+ *    "nobody challenged this" is itself a real, terminal fact about the job).
+ *    Reusing `settled` rather than inventing a fifth status is deliberate:
+ *    both paths mean the same thing at the state-machine level ("closed,
+ *    provider not slashed"); `verdict` being present or absent is exactly
+ *    what already distinguishes "the challenge failed" from "nobody
+ *    challenged it".
+ *
+ * `slashed` and `settled` are both terminal. Every other move (skipping
+ * straight to `slashed` without a challenge, moving out of a terminal state,
  * moving "backwards") is rejected with a named, catchable error instead of
  * being silently ignored.
  */
@@ -16,7 +31,7 @@
 import type { Job, JobStatus } from './types.js';
 
 const ALLOWED_TRANSITIONS: Readonly<Record<JobStatus, readonly JobStatus[]>> = {
-  served: ['challenged'],
+  served: ['challenged', 'settled'],
   challenged: ['slashed', 'settled'],
   slashed: [],
   settled: [],

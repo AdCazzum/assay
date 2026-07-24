@@ -90,6 +90,7 @@ export class FakePaymentsPort implements PaymentsPort {
   readonly payCalls: Array<{ amountHbar: number; requestHash: string }> = [];
   readonly confirmCalls: string[] = [];
   readonly postBondCalls: number[] = [];
+  readonly slashCalls: Array<{ bondRef: string; toChallenger: string }> = [];
   private readonly confirmed: Set<string>;
   private readonly autoConfirm: boolean;
   private paySeq = 0;
@@ -119,8 +120,9 @@ export class FakePaymentsPort implements PaymentsPort {
     return { bondRef: `fake-bond-${this.bondSeq}`, txId: `0xfake-bond-${this.bondSeq}` };
   }
 
-  async slash(): Promise<{ txId: string }> {
-    return { txId: '0xfake-slash-1' };
+  async slash(bondRef: string, toChallenger: string): Promise<{ txId: string }> {
+    this.slashCalls.push({ bondRef, toChallenger });
+    return { txId: `0xfake-slash-${this.slashCalls.length}` };
   }
 }
 
