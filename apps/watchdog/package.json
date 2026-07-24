@@ -15,6 +15,7 @@
   "dependencies": {
     "@assay/cap-rugscore": "workspace:*",
     "@assay/core": "workspace:*",
+    "@assay/graph": "workspace:*",
     "@assay/payments": "workspace:*",
     "@assay/registry": "workspace:*"
   }
