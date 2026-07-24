@@ -115,6 +115,51 @@ conference wifi before the demo. Do not claim "sub-second settlement" on stage:
 consensus is fast, but the number a viewer sees is the confirm loop, and that is
 about four seconds.
 
+### postBond / slash, proven on live testnet
+
+`scripts/bond-slash.ts` runs the same round trip for `postBond` and `slash`
+(issue #7), against Hedera testnet on 2026-07-24, operator `0.0.9695801`:
+
+```
+[bond-slash] operator key verified against 0.0.9695801
+[bond-slash] NOTE: only one funded testnet account exists, so both postBond and
+slash are self-transfers back to the operator. This proves the transaction path
+(a real bond deposit and a real slash payout each land and confirm on testnet),
+not the economics of an independent bond-escrow account or challenger.
+[bond-slash] posting bond: 0.02 HBAR, 0.0.9695801 -> 0.0.9695801
+[bond-slash] bond submitted, bondRef=bond-1-0.0.9695801@1784930203.231787552 txId=0.0.9695801@1784930203.231787552
+  poll #5 at 4141ms: success
+[bond-slash] bond confirmed=true settle_time_ms=4540
+[bond-slash] HashScan (bond): https://hashscan.io/testnet/transaction/0.0.9695801@1784930203.231787552
+[bond-slash] slashing 0.01 of 0.02 HBAR bond to challenger: 0.0.9695801 -> 0.0.9695801
+[bond-slash] slash submitted, txId=0.0.9695801@1784930208.924202863
+  poll #5 at 4148ms: success
+[bond-slash] slash confirmed=true settle_time_ms=4658
+[bond-slash] HashScan (slash): https://hashscan.io/testnet/transaction/0.0.9695801@1784930208.924202863
+```
+
+Verified on the mirror node (`GET /api/v1/transactions/{id}`): both
+`result=SUCCESS`, `charged_tx_fee=140061` tinybar (~0.0014 HBAR) each, same
+order of magnitude as `pay`'s fee.
+
+**Bond settled in 4.54s, slash in 4.66s** wall clock, consistent with `pay`'s
+4.1s: all three are the same `TransferTransaction` shape, so the settle time is
+dominated by the same ~3s consensus + mirror-node ingestion lag, not by which
+`PaymentsPort` method issued it.
+
+**Only a self-transfer was exercised** (there is no second funded testnet
+account): both `postBond` and `slash` sent `0.0.9695801 -> 0.0.9695801`. The
+mirror node's transfer list for each transaction shows only the network fee
+(`0.0.9695801 -> 0.0.802`, the node account); the bond/slash amount nets to
+zero because sender and receiver are the same account, so no separate transfer
+line survives netting. That is expected and it is exactly what "prove the
+transaction path, not the economics" (per the issue) means here: the
+transaction itself is real, signed, submitted, and finalized on testnet by the
+real `@hashgraph/sdk` client, but with only one account there is no genuine
+second party for the bond/slash amount to land in. Set
+`SPIKE_BOND_ACCOUNT_ID` / `SPIKE_CHALLENGER_ACCOUNT_ID` to a second testnet
+account once one exists to see a real net transfer.
+
 ### The operator key trap, and why there is a preflight
 
 `PrivateKey.fromString()` does not detect the curve. Given a bare 32-byte hex
@@ -134,11 +179,10 @@ startup with a message naming the curve you wanted, before anything is signed.
 
 ### Still unproven
 
-- `postBond` / `slash` have only been exercised against the fake client. The
-  live path is the same `TransferTransaction` the proven `pay` uses, so the risk
-  is low, but it is not the same as having run it.
-- Only a self-transfer has been executed. A real provider account as the payee
-  is untested (set `SPIKE_PAY_TO_ACCOUNT_ID`).
+- Every live run so far (`pay`, `postBond`, `slash`) has been a self-transfer,
+  because only one funded testnet account exists. A real second account as the
+  payee/bond-escrow/challenger is untested (set `SPIKE_PAY_TO_ACCOUNT_ID` /
+  `SPIKE_BOND_ACCOUNT_ID` / `SPIKE_CHALLENGER_ACCOUNT_ID`).
 
 If you see a stray `undefined` line on stdout when running via
 `pnpm --filter @assay/payments exec tsx scripts/spike.ts` and it fails, check
@@ -157,3 +201,16 @@ Reads `HEDERA_OPERATOR_ID` / `HEDERA_OPERATOR_KEY` / `HEDERA_NETWORK` from a
 second testnet account provisioned yet — override with
 `SPIKE_PAY_TO_ACCOUNT_ID` once one exists), confirms it via the mirror node,
 and prints the settle time in milliseconds plus a HashScan link.
+
+## Running the bond/slash script once credentials exist
+
+```
+pnpm --filter @assay/payments exec tsx scripts/bond-slash.ts
+```
+
+Same `.env` as the spike. Posts a small bond (0.02 HBAR by default, override
+with `SPIKE_BOND_AMOUNT_HBAR`) to itself, confirms it, then slashes part of it
+(half the bond by default, override with `SPIKE_SLASH_AMOUNT_HBAR`) to itself
+as a stand-in challenger (override `SPIKE_BOND_ACCOUNT_ID` /
+`SPIKE_CHALLENGER_ACCOUNT_ID` once a second testnet account exists), confirming
+that too. Prints both settle times and both HashScan links.
