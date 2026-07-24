@@ -3,8 +3,11 @@ import {
   createAssayNode,
   JobNotChallengeableError,
   JobNotSettleableError,
+  ManifestPublishFailedError,
   MissingChallengerAccountError,
   PaymentNotConfirmedError,
+  type RegisterProgress,
+  ReputationInitFailedError,
   ReputationUpdateFailedError,
   UnknownClaimError,
 } from './node.js';
@@ -34,6 +37,15 @@ const manifest: Manifest = {
 const seedRecord: Omit<ProviderRecord, 'name'> = {
   manifest,
   reputation: { score: 80, jobs: 3, slashes: 0, bondHbar: 50 },
+};
+
+/** `manifest` minus `bondRef`: what a caller actually hands `register()` (see `RegisterInput`). */
+const registerManifestInput: Omit<Manifest, 'bondRef'> = {
+  capabilityId: manifest.capabilityId,
+  description: manifest.description,
+  priceHbar: manifest.priceHbar,
+  endpoint: manifest.endpoint,
+  verifierHash: manifest.verifierHash,
 };
 
 type EchoVerify = Capability<string, { echoed: string }>['verify'];
@@ -184,17 +196,6 @@ describe('createAssayNode', () => {
 
     expect(record.manifest).toEqual(manifest);
     expect(record.reputation).toEqual({ score: 80, jobs: 3, slashes: 0, bondHbar: 50 });
-  });
-
-  it('register publishes the manifest and posts the bond', async () => {
-    const { node, registry, payments } = buildNode();
-
-    const result = await node.register({ name: PROVIDER_NAME, manifest, bondHbar: 50 });
-
-    expect(result.manifestTxHash).toMatch(/^0xfake-manifest-/);
-    expect(result.bondRef).toMatch(/^fake-bond-/);
-    expect(registry.publishedManifests).toEqual([{ name: PROVIDER_NAME, manifest }]);
-    expect(payments.postBondCalls).toEqual([50]);
   });
 
   it('assess() gives discover()\'s record back with a structured risk read, without deciding for the caller', async () => {
@@ -463,5 +464,154 @@ describe('createAssayNode: settle (#27)', () => {
   it('rejects an unknown job id', async () => {
     const { node } = buildNode();
     await expect(node.settle('no-such-job', trueVerdict)).rejects.toThrow(/Unknown job/);
+  });
+});
+
+describe('createAssayNode: register (#17)', () => {
+  const FRESH_PROVIDER_NAME = 'fresh.assay.eth';
+
+  function buildFreshNode(onRegisterProgress?: (info: RegisterProgress) => void) {
+    const registry = new FakeRegistryPort();
+    const payments = new FakePaymentsPort();
+    const graph = new FakeGraphPort();
+    const capabilities = createCapabilityRegistry();
+    capabilities.register(echoCapability);
+
+    const node = createAssayNode({ registry, payments, graph, capabilities, onRegisterProgress });
+    return { node, registry, payments, graph };
+  }
+
+  it('happy path: bonds first, publishes the manifest carrying the real bondRef, then initializes reputation from zero, in that order', async () => {
+    const progress: RegisterProgress[] = [];
+    const { node, registry, payments } = buildFreshNode((info) => progress.push(info));
+
+    const result = await node.register({
+      name: FRESH_PROVIDER_NAME,
+      manifest: registerManifestInput,
+      bondHbar: 50,
+    });
+
+    // the bond really happened, and produced the bondRef/bondTxId
+    expect(payments.postBondCalls).toEqual([50]);
+    expect(result.bondRef).toMatch(/^fake-bond-/);
+    expect(result.bondTxId).toMatch(/^0xfake-bond-/);
+
+    // the published manifest carries that *real* bondRef, not a placeholder
+    expect(registry.publishedManifests).toEqual([
+      { name: FRESH_PROVIDER_NAME, manifest: { ...registerManifestInput, bondRef: result.bondRef } },
+    ]);
+    expect(result.manifestTxHash).toMatch(/^0xfake-manifest-/);
+
+    // reputation was initialized from zero (a name registered for the first
+    // time), with bondHbar reflecting the real bond just posted
+    expect(result.reputation).toEqual({ score: 0, jobs: 0, slashes: 0, bondHbar: 50 });
+    expect(result.reputationTxHash).toMatch(/^0xfake-rep-/);
+
+    // and the provider is now genuinely discoverable end to end
+    const discovered = await node.discover(FRESH_PROVIDER_NAME);
+    expect(discovered.manifest.bondRef).toBe(result.bondRef);
+    expect(discovered.reputation).toEqual(result.reputation);
+
+    // progress was reported in order, one tick per phase boundary
+    expect(progress.map((p) => p.phase)).toEqual([
+      'posting-bond',
+      'publishing-manifest',
+      'initializing-reputation',
+      'done',
+    ]);
+    expect(progress[1]).toMatchObject({ bondRef: result.bondRef, bondTxId: result.bondTxId });
+    expect(progress[2]).toMatchObject({ bondRef: result.bondRef, manifestTxHash: result.manifestTxHash });
+    expect(progress[3]).toMatchObject({ result });
+  });
+
+  it('bond-succeeds-then-ENS-fails: the manifest publish failing leaves the provider bonded but unlisted, and the error carries the real bondRef/bondTxId/manifest so the caller can retry the manifest publish directly, without posting a second bond', async () => {
+    const { node, registry, payments } = buildFreshNode();
+    registry.publishManifestError = new Error('Sepolia RPC timed out');
+
+    let caught: ManifestPublishFailedError | undefined;
+    try {
+      await node.register({ name: FRESH_PROVIDER_NAME, manifest: registerManifestInput, bondHbar: 50 });
+      throw new Error('should have thrown');
+    } catch (err) {
+      caught = err as ManifestPublishFailedError;
+    }
+
+    expect(caught).toBeInstanceOf(ManifestPublishFailedError);
+    expect(caught!.providerName).toBe(FRESH_PROVIDER_NAME);
+    expect(caught!.bondRef).toMatch(/^fake-bond-/);
+    expect(caught!.manifest).toEqual({ ...registerManifestInput, bondRef: caught!.bondRef });
+
+    // the money already moved: one real bond was posted
+    expect(payments.postBondCalls).toEqual([50]);
+    // but nothing on ENS reflects it yet
+    expect(registry.publishedManifests).toEqual([]);
+
+    // recovery: retry the manifest publish directly (not register() again),
+    // using the bondRef the failed attempt's bond already produced
+    const { txHash } = await registry.publishManifest(FRESH_PROVIDER_NAME, caught!.manifest);
+    expect(txHash).toMatch(/^0xfake-manifest-/);
+    // still only the one bond from the failed register() call -- the retry
+    // never posted a second one
+    expect(payments.postBondCalls).toEqual([50]);
+  });
+
+  it('bond and manifest succeed but the reputation-init write fails: the provider is listed but not yet discoverable, and the error names it', async () => {
+    const { node, registry, payments } = buildFreshNode();
+    registry.updateReputationError = new Error('Sepolia RPC timed out');
+
+    let caught: ReputationInitFailedError | undefined;
+    try {
+      await node.register({ name: FRESH_PROVIDER_NAME, manifest: registerManifestInput, bondHbar: 50 });
+      throw new Error('should have thrown');
+    } catch (err) {
+      caught = err as ReputationInitFailedError;
+    }
+
+    expect(caught).toBeInstanceOf(ReputationInitFailedError);
+    expect(caught!.providerName).toBe(FRESH_PROVIDER_NAME);
+    expect(caught!.bondRef).toMatch(/^fake-bond-/);
+    expect(caught!.manifestTxHash).toMatch(/^0xfake-manifest-/);
+
+    // the bond and the manifest are both real and durable
+    expect(payments.postBondCalls).toEqual([50]);
+    expect(registry.publishedManifests).toHaveLength(1);
+
+    // (the real `@assay/registry` adapter's `resolveProvider` throws
+    // `MissingRecordError` here until `assay:rep` actually exists --
+    // `FakeRegistryPort.publishManifest` gives every published name a zero
+    // reputation up front as a simplification other tests already rely on,
+    // so this fake alone can't exercise that "listed but not discoverable"
+    // gap; the error type/message above is what documents it.)
+
+    // recovery: retry just the reputation write directly
+    const { reputation } = await registry.updateReputation(FRESH_PROVIDER_NAME, { bondHbar: 50 });
+    expect(reputation).toEqual({ score: 0, jobs: 0, slashes: 0, bondHbar: 50 });
+  });
+
+  it('re-registration: posts a fresh bond and republishes the manifest, but the reputation write merges onto history rather than resetting it', async () => {
+    const { node, registry, payments } = buildNode(); // PROVIDER_NAME already seeded: score 80, jobs 3, slashes 0, bondHbar 50
+
+    const result = await node.register({
+      name: PROVIDER_NAME,
+      manifest: registerManifestInput,
+      bondHbar: 5,
+    });
+
+    // a real, fresh bond was posted -- re-registration does not reuse the old one
+    expect(payments.postBondCalls).toEqual([5]);
+    expect(result.bondRef).toMatch(/^fake-bond-/);
+
+    // the manifest was overwritten with the new bondRef
+    expect(registry.publishedManifests).toEqual([
+      { name: PROVIDER_NAME, manifest: { ...registerManifestInput, bondRef: result.bondRef } },
+    ]);
+
+    // reputation's score/jobs/slashes survive the re-registration (history is
+    // not erased); only bondHbar changes, to reflect the bond just posted
+    expect(result.reputation).toEqual({ score: 80, jobs: 3, slashes: 0, bondHbar: 5 });
+
+    const discovered = await node.discover(PROVIDER_NAME);
+    expect(discovered.reputation).toEqual(result.reputation);
+    expect(discovered.manifest.bondRef).toBe(result.bondRef);
   });
 });
