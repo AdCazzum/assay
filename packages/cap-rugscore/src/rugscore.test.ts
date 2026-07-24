@@ -104,11 +104,6 @@ describe('createRugScoreCapability().run', () => {
   });
 });
 
-describe('createRugScoreCapability().verify', () => {
-  it('is out of scope for this issue and throws rather than lying', async () => {
-    const graph = new FakeGraphPort(1, {});
-    const capability = createRugScoreCapability({ graph });
-
-    await expect(capability.verify('0xtoken', { score: 0 }, [])).rejects.toThrow('#12');
-  });
-});
+// verify() has its own dedicated test file: verify.test.ts. That is also
+// where the SPEC.md §13 clean/rug fixtures and the lying-provider harness
+// live, since verifying a claim is the demo climax, not an aside to run().
