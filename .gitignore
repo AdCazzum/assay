@@ -15,6 +15,9 @@ build/
 # design doc kept local, not published
 /SPEC.md
 
+# generated at run time by apps/mcp/scripts/run-agent.ts, never hand-edited or committed
+apps/mcp/agent/.mcp-config.*.generated.json
+
 # editor / agent local state
 .emdash/
 .claude/settings.local.json
