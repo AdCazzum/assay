@@ -133,12 +133,11 @@ export class FakeGraphPort implements GraphPort {
   async getTokenSignals(_token: string, atBlock?: number): Promise<TokenSignals> {
     return {
       atBlock: atBlock ?? 1,
-      holders: 0,
-      top10Pct: 0,
       liquidityUsd: 0,
       ageBlocks: 0,
-      transfers: 0,
-      hasActiveMintRole: false,
+      txCount: 0,
+      volumeUsd: 0,
+      topPoolConcentrationPct: 0,
     };
   }
 }
