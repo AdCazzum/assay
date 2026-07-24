@@ -170,12 +170,11 @@ export class FakeGraphPort implements GraphPort {
     private readonly latestBlock = 1,
     private readonly signals: TokenSignals = {
       atBlock: 1,
-      holders: 120,
-      top10Pct: 18,
       liquidityUsd: 250_000,
       ageBlocks: 900_000,
-      transfers: 4_200,
-      hasActiveMintRole: false,
+      txCount: 500_000,
+      volumeUsd: 20_000_000,
+      topPoolConcentrationPct: 18,
     },
   ) {}
 

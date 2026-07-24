@@ -6,23 +6,28 @@ import {
   GraphRateLimitError,
   GraphTokenNotFoundError,
 } from './errors.js';
-import { UNIMPLEMENTED_SIGNAL_KEYS } from './constants.js';
 
 const TOKEN = '0x00000000000000000000000000000000000dEaD';
 const TOKEN_LOWER = TOKEN.toLowerCase();
 const SUBGRAPH_ID = 'test-subgraph-id';
 
-type TokenScenario = { totalValueLockedUsd: string; poolCreatedAtBlock?: number } | 'not-found';
+type TokenScenario = {
+  txCount: string;
+  volumeUsd: string;
+  /** Pool TVLs, in the order the fake returns them for the TVL-desc query (largest first). */
+  poolTvlsDesc?: string[];
+  oldestPoolCreatedAtBlock?: number;
+} | 'not-found';
 type BlockRangeReason = 'before-start' | 'not-yet-indexed';
 
 /**
  * FakeGatewayFetch — an obviously-named test double for the gateway's HTTP
  * surface. Routes each POST body by its GraphQL operation (`_meta` vs the
  * token-signals query) and by the `$block` variable, to canned responses.
- * Records every call so tests can assert exactly which block/id the adapter
- * pinned. This stands in for the transport only, in unit tests; it never
- * pretends to be real subgraph data and is never used by the live smoke
- * script.
+ * Records every call so tests can assert exactly which block/id/sample-size
+ * the adapter pinned. This stands in for the transport only, in unit tests;
+ * it never pretends to be real subgraph data and is never used by the live
+ * smoke script.
  */
 function createFakeGatewayFetch(config: {
   metaBlock?: number;
@@ -70,15 +75,16 @@ function createFakeGatewayFetch(config: {
 
     const scenario = config.tokensByBlock?.[block];
     if (scenario === undefined || scenario === 'not-found') {
-      return respond({ data: { token: null, pools: [] } });
+      return respond({ data: { token: null, oldestPool: [], topPools: [] } });
     }
     return respond({
       data: {
-        token: { totalValueLockedUSD: scenario.totalValueLockedUsd },
-        pools:
-          scenario.poolCreatedAtBlock !== undefined
-            ? [{ createdAtBlockNumber: String(scenario.poolCreatedAtBlock) }]
+        token: { txCount: scenario.txCount, volumeUSD: scenario.volumeUsd },
+        oldestPool:
+          scenario.oldestPoolCreatedAtBlock !== undefined
+            ? [{ createdAtBlockNumber: String(scenario.oldestPoolCreatedAtBlock) }]
             : [],
+        topPools: (scenario.poolTvlsDesc ?? []).map((tvl) => ({ totalValueLockedUSD: tvl })),
       },
     });
   });
@@ -87,44 +93,36 @@ function createFakeGatewayFetch(config: {
 }
 
 describe('createGraphAdapter', () => {
-  it('maps a happy-path token to TokenSignals, real fields populated and unimplemented ones marked', async () => {
+  it('maps a happy-path token to TokenSignals: every field real, none a sentinel', async () => {
     const { fetchFn } = createFakeGatewayFetch({
-      tokensByBlock: { 20000000: { totalValueLockedUsd: '640775689.27', poolCreatedAtBlock: 12369760 } },
+      tokensByBlock: {
+        20000000: {
+          txCount: '13682874',
+          volumeUsd: '749453784937.16',
+          oldestPoolCreatedAtBlock: 12369760,
+          poolTvlsDesc: ['472941909.09', '396697962.81', '88573949.61'],
+        },
+      },
     });
     const adapter = createGraphAdapter({ apiKey: 'test-key', fetch: fetchFn, subgraphId: SUBGRAPH_ID });
 
     const signals = await adapter.getTokenSignals(TOKEN, 20000000);
 
     expect(signals.atBlock).toBe(20000000);
-    expect(signals.liquidityUsd).toBeCloseTo(640775689.27);
+    expect(signals.txCount).toBe(13682874);
+    expect(signals.volumeUsd).toBeCloseTo(749453784937.16);
     expect(signals.ageBlocks).toBe(20000000 - 12369760);
-    expect(Number.isNaN(signals.holders)).toBe(true);
-    expect(Number.isNaN(signals.top10Pct)).toBe(true);
-    expect(Number.isNaN(signals.transfers)).toBe(true);
-    expect(signals.hasActiveMintRole).toBe(false);
-  });
-
-  it('marks exactly the fields listed in UNIMPLEMENTED_SIGNAL_KEYS as sentinels, nothing else', async () => {
-    const { fetchFn } = createFakeGatewayFetch({
-      tokensByBlock: { 20000000: { totalValueLockedUsd: '100', poolCreatedAtBlock: 19000000 } },
-    });
-    const adapter = createGraphAdapter({ apiKey: 'test-key', fetch: fetchFn, subgraphId: SUBGRAPH_ID });
-
-    const signals = await adapter.getTokenSignals(TOKEN, 20000000);
-
-    for (const key of UNIMPLEMENTED_SIGNAL_KEYS) {
-      const value = signals[key];
-      expect(typeof value === 'boolean' ? value === false : Number.isNaN(value as number)).toBe(true);
-    }
-    // and the two real fields are NOT sentinels:
-    expect(Number.isNaN(signals.liquidityUsd)).toBe(false);
-    expect(Number.isNaN(signals.ageBlocks)).toBe(false);
+    expect(signals.liquidityUsd).toBeCloseTo(472941909.09);
+    const expectedPct = (472941909.09 / (472941909.09 + 396697962.81 + 88573949.61)) * 100;
+    expect(signals.topPoolConcentrationPct).toBeCloseTo(expectedPct);
   });
 
   describe('block-pinning', () => {
-    it('sends the exact requested block in the query variables', async () => {
+    it('sends the exact requested block and the top-pools sample size in the query variables', async () => {
       const { fetchFn, calls } = createFakeGatewayFetch({
-        tokensByBlock: { 20000000: { totalValueLockedUsd: '1', poolCreatedAtBlock: 19000000 } },
+        tokensByBlock: {
+          20000000: { txCount: '1', volumeUsd: '1', oldestPoolCreatedAtBlock: 19000000, poolTvlsDesc: ['1'] },
+        },
       });
       const adapter = createGraphAdapter({ apiKey: 'test-key', fetch: fetchFn, subgraphId: SUBGRAPH_ID });
 
@@ -133,13 +131,24 @@ describe('createGraphAdapter', () => {
       const signalsCall = calls.find((c) => !c.query.includes('_meta'));
       expect(signalsCall?.variables?.block).toBe(20000000);
       expect(signalsCall?.variables?.id).toBe(TOKEN_LOWER);
+      expect(signalsCall?.variables?.topPoolsFirst).toBe(5);
     });
 
     it('proves two different blocks yield genuinely different values for the same token', async () => {
       const { fetchFn } = createFakeGatewayFetch({
         tokensByBlock: {
-          20000000: { totalValueLockedUsd: '640775689', poolCreatedAtBlock: 12369760 },
-          22000000: { totalValueLockedUsd: '570736950', poolCreatedAtBlock: 12369760 },
+          20000000: {
+            txCount: '13682874',
+            volumeUsd: '749453784937',
+            oldestPoolCreatedAtBlock: 12369760,
+            poolTvlsDesc: ['472941909', '396697962'],
+          },
+          22000000: {
+            txCount: '18679418',
+            volumeUsd: '881318888823',
+            oldestPoolCreatedAtBlock: 12369760,
+            poolTvlsDesc: ['414385665', '310305299'],
+          },
         },
       });
       const adapter = createGraphAdapter({ apiKey: 'test-key', fetch: fetchFn, subgraphId: SUBGRAPH_ID });
@@ -148,14 +157,15 @@ describe('createGraphAdapter', () => {
       const later = await adapter.getTokenSignals(TOKEN, 22000000);
 
       expect(early.liquidityUsd).not.toBe(later.liquidityUsd);
-      expect(early.ageBlocks).not.toBe(later.ageBlocks);
+      expect(early.txCount).not.toBe(later.txCount);
+      expect(early.volumeUsd).not.toBe(later.volumeUsd);
       expect(early.atBlock).toBe(20000000);
       expect(later.atBlock).toBe(22000000);
     });
 
     it('lower-cases a checksummed token address before querying, since the subgraph keys ids by lower-case address', async () => {
       const { fetchFn, calls } = createFakeGatewayFetch({
-        tokensByBlock: { 20000000: { totalValueLockedUsd: '1' } },
+        tokensByBlock: { 20000000: { txCount: '1', volumeUsd: '0' } },
       });
       const adapter = createGraphAdapter({ apiKey: 'test-key', fetch: fetchFn, subgraphId: SUBGRAPH_ID });
 
@@ -166,22 +176,45 @@ describe('createGraphAdapter', () => {
       expect(signalsCall?.variables?.id).not.toBe(TOKEN);
     });
 
-    it('reports ageBlocks as NaN, not zero, when no Uniswap v3 pool exists yet for the token', async () => {
+    it('reports ageBlocks, liquidityUsd and topPoolConcentrationPct as NaN, not zero, when no Uniswap v3 pool exists yet for the token', async () => {
       const { fetchFn } = createFakeGatewayFetch({
-        tokensByBlock: { 20000000: { totalValueLockedUsd: '0' } },
+        tokensByBlock: { 20000000: { txCount: '0', volumeUsd: '0' } },
       });
       const adapter = createGraphAdapter({ apiKey: 'test-key', fetch: fetchFn, subgraphId: SUBGRAPH_ID });
 
       const signals = await adapter.getTokenSignals(TOKEN, 20000000);
 
       expect(Number.isNaN(signals.ageBlocks)).toBe(true);
-      expect(signals.liquidityUsd).toBe(0); // a real, honest zero — distinct from the NaN sentinel
+      expect(Number.isNaN(signals.liquidityUsd)).toBe(true);
+      expect(Number.isNaN(signals.topPoolConcentrationPct)).toBe(true);
+      expect(signals.txCount).toBe(0); // a real, honest zero — distinct from the NaN "no pool yet" sentinel
+    });
+
+    it('reports topPoolConcentrationPct as 100 when only one pool has ever traded the token', async () => {
+      const { fetchFn } = createFakeGatewayFetch({
+        tokensByBlock: {
+          20000000: {
+            txCount: '2',
+            volumeUsd: '0',
+            oldestPoolCreatedAtBlock: 19999900,
+            poolTvlsDesc: ['56.51'],
+          },
+        },
+      });
+      const adapter = createGraphAdapter({ apiKey: 'test-key', fetch: fetchFn, subgraphId: SUBGRAPH_ID });
+
+      const signals = await adapter.getTokenSignals(TOKEN, 20000000);
+
+      expect(signals.liquidityUsd).toBeCloseTo(56.51);
+      expect(signals.topPoolConcentrationPct).toBe(100);
     });
 
     it('resolves atBlock via getLatestBlock when the caller omits it, and pins the signals query to that same block', async () => {
       const { fetchFn, calls } = createFakeGatewayFetch({
         metaBlock: 21000000,
-        tokensByBlock: { 21000000: { totalValueLockedUsd: '1', poolCreatedAtBlock: 20000000 } },
+        tokensByBlock: {
+          21000000: { txCount: '1', volumeUsd: '1', oldestPoolCreatedAtBlock: 20000000, poolTvlsDesc: ['1'] },
+        },
       });
       const adapter = createGraphAdapter({ apiKey: 'test-key', fetch: fetchFn, subgraphId: SUBGRAPH_ID });
 
@@ -232,10 +265,13 @@ describe('createGraphAdapter', () => {
     expect((error as GraphRateLimitError).retryAfterSeconds).toBe(30);
   });
 
-  it('throws GraphMalformedResponseError when totalValueLockedUSD is missing from a 2xx response', async () => {
+  it('throws GraphMalformedResponseError when txCount is missing from a 2xx response', async () => {
     const fetchFn = vi.fn(() =>
       Promise.resolve(
-        new Response(JSON.stringify({ data: { token: { notWhatWeExpect: true }, pools: [] } }), { status: 200 }),
+        new Response(
+          JSON.stringify({ data: { token: { notWhatWeExpect: true }, oldestPool: [], topPools: [] } }),
+          { status: 200 },
+        ),
       ),
     ) as unknown as typeof fetch;
     const adapter = createGraphAdapter({ apiKey: 'test-key', fetch: fetchFn, subgraphId: SUBGRAPH_ID });

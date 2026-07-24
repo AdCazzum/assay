@@ -189,27 +189,41 @@ function asIntNumber(row: Record<string, unknown>, key: string, field: string): 
   return v;
 }
 
-/** `token { totalValueLockedUSD }` */
+/** `token { txCount, volumeUSD }` */
 export interface TokenRow {
-  totalValueLockedUsd: number;
+  txCount: number;
+  volumeUsd: number;
 }
 
 export function parseTokenRow(value: unknown): TokenRow {
   const row = asRow(value, 'token');
   return {
-    totalValueLockedUsd: asNumericString(row, 'totalValueLockedUSD', 'token'),
+    txCount: asNumericString(row, 'txCount', 'token'),
+    volumeUsd: asNumericString(row, 'volumeUSD', 'token'),
   };
 }
 
-/** `pools { createdAtBlockNumber }` */
-export interface PoolRow {
+/** `pools { createdAtBlockNumber }`, from the oldest-first query (for `ageBlocks`). */
+export interface OldestPoolRow {
   createdAtBlockNumber: number;
 }
 
-export function parsePoolRow(value: unknown): PoolRow {
+export function parseOldestPoolRow(value: unknown): OldestPoolRow {
   const row = asRow(value, 'pool');
   return {
     createdAtBlockNumber: asNumericString(row, 'createdAtBlockNumber', 'pool'),
+  };
+}
+
+/** `pools { totalValueLockedUSD }`, from the TVL-ordered query (for `liquidityUsd` / `topPoolConcentrationPct`). */
+export interface TopPoolRow {
+  totalValueLockedUsd: number;
+}
+
+export function parseTopPoolRow(value: unknown): TopPoolRow {
+  const row = asRow(value, 'pool');
+  return {
+    totalValueLockedUsd: asNumericString(row, 'totalValueLockedUSD', 'pool'),
   };
 }
 

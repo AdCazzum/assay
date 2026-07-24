@@ -35,6 +35,20 @@ export interface CreateEnsRegistryOptions {
   gateway?: EnsResolverGateway;
 }
 
+/**
+ * A text record that was never written is not a broken one.
+ *
+ * ethers reports an unset record as an empty string, and only returns null
+ * when the resolver cannot answer at all. Both mean "nothing here", and both
+ * have to be caught before the JSON decoder sees them, or an uninitialised
+ * provider is reported as having a corrupt record. That distinction matters
+ * to whoever reads the error: "not set yet" is the normal state of a name
+ * that was just registered, "malformed" says someone wrote garbage into it.
+ */
+function isUnset(raw: string | null): raw is null {
+  return raw === null || raw.trim() === '';
+}
+
 export function createEnsRegistry(opts: CreateEnsRegistryOptions): RegistryPort {
   const gateway = opts.gateway ?? createEthersEnsGateway({ rpcUrl: opts.rpcUrl, privateKey: opts.privateKey });
   const parentName = opts.parentName;
@@ -56,13 +70,13 @@ export function createEnsRegistry(opts: CreateEnsRegistryOptions): RegistryPort 
       assertOwnedName(name);
 
       const manifestRaw = await gateway.getText(name, MANIFEST_RECORD_KEY);
-      if (manifestRaw === null) {
+      if (isUnset(manifestRaw)) {
         throw new MissingRecordError(MANIFEST_RECORD_KEY, name);
       }
       const manifest = decodeManifest(manifestRaw, name);
 
       const reputationRaw = await gateway.getText(name, REPUTATION_RECORD_KEY);
-      if (reputationRaw === null) {
+      if (isUnset(reputationRaw)) {
         throw new MissingRecordError(REPUTATION_RECORD_KEY, name);
       }
       const reputation = decodeReputation(reputationRaw, name);
