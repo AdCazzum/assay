@@ -1,0 +1,21 @@
+{
+  "name": "@assay/watchdog",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "description": "Challenges a claim and triggers the verifier",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@assay/cap-rugscore": "workspace:*",
+    "@assay/core": "workspace:*",
+    "@assay/payments": "workspace:*",
+    "@assay/registry": "workspace:*"
+  }
+}

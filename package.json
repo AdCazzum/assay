@@ -12,5 +12,12 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "dotenv": "^16.6.1",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  }
 }
