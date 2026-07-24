@@ -36,6 +36,14 @@ export class FakeRegistryPort implements RegistryPort {
   readonly reputationUpdates: Array<{ name: string; delta: Partial<Reputation> }> = [];
   private txSeq = 0;
   /**
+   * If set, the *next* `publishManifest` call throws this instead of
+   * writing, then clears itself (so a retry of the same call succeeds).
+   * Models a real ENS write failing once (SPEC.md §9) -- this is how
+   * `node.test.ts` drives `register()`'s "bond succeeded, manifest publish
+   * failed" partial-failure path without a second, untested fake.
+   */
+  publishManifestError?: Error;
+  /**
    * If set, the *next* `updateReputation` call throws this instead of
    * writing, then clears itself (so a retry of the same call succeeds).
    * Models a real ENS write failing once (SPEC.md §9: it is a real,
@@ -57,6 +65,11 @@ export class FakeRegistryPort implements RegistryPort {
   }
 
   async publishManifest(name: string, manifest: Manifest): Promise<{ txHash: string }> {
+    if (this.publishManifestError) {
+      const error = this.publishManifestError;
+      this.publishManifestError = undefined;
+      throw error;
+    }
     this.publishedManifests.push({ name, manifest });
     this.txSeq += 1;
     const existing = this.records.get(name);
