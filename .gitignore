@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+*.tsbuildinfo
+
+# env / secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# design doc kept local, not published
+/SPEC.md
+
+# editor / agent local state
+.emdash/
+.claude/settings.local.json
+.DS_Store
+*.log

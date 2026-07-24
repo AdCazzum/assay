@@ -1,0 +1,16 @@
+{
+  "name": "assay",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A reputation and payment rail for agent-to-agent services: agents discover, pay, and get assayed. ENS + Hedera + The Graph.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "license": "MIT"
+}
