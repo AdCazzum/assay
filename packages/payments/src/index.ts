@@ -1,5 +1,20 @@
 /**
- * @assay/payments — see SPEC.md §4. Implementation lands with its tracked issue.
+ * @assay/payments — Hedera testnet adapter for `PaymentsPort` (see SPEC.md §4).
+ *
+ * Rail decision: raw HBAR transfer with `requestHash` in the memo, confirmed
+ * via mirror node polling. See ../README.md for the spike that led here.
  */
 
-export const PACKAGE_ID = '@assay/payments';
+export { createHederaPaymentsPort } from './payments.js';
+export type { HederaPaymentsPortConfig } from './payments.js';
+
+export { createHederaSdkTransferClient } from './hedera-client.js';
+export type {
+  HederaNetwork,
+  HederaSdkClientConfig,
+  HederaTransferClient,
+  TransferHbarParams,
+} from './hedera-client.js';
+
+export { pollMirrorNode, toMirrorNodeTransactionId, MirrorNodeTimeoutError } from './mirror-node.js';
+export type { FetchLike, MirrorNodePollAttempt, MirrorNodePollConfig, MirrorNodePollState } from './mirror-node.js';
