@@ -1,6 +1,7 @@
 /**
- * @assay/graph — `GraphPort` over The Graph's Token API (mainnet, read-only).
- * See README.md for the endpoint mapping and its block-stamping limitations.
+ * @assay/graph — `GraphPort` over The Graph's decentralized gateway
+ * (Uniswap v3 mainnet subgraph, block-pinned). See README.md for the signal
+ * mapping and what is left honestly unimplemented.
  */
 
 export const PACKAGE_ID = '@assay/graph';
@@ -8,16 +9,14 @@ export const PACKAGE_ID = '@assay/graph';
 export { createGraphAdapter, type CreateGraphAdapterOptions } from './adapter.js';
 export {
   GraphApiError,
+  GraphBlockOutOfRangeError,
   GraphMalformedResponseError,
   GraphRateLimitError,
   GraphTokenNotFoundError,
 } from './errors.js';
 export {
-  DEFAULT_NETWORK,
-  HEAD_PROXY_TOKEN,
-  MINT_RECENCY_BLOCKS,
-  STABLECOINS,
-  TOP_HOLDERS_COUNT,
-  TRANSFER_SCAN_LIMIT,
-  ZERO_ADDRESS,
+  normalizeTokenAddress,
+  UNIMPLEMENTED_SIGNAL_KEYS,
+  UNISWAP_V3_MAINNET_START_BLOCK,
+  UNISWAP_V3_MAINNET_SUBGRAPH_ID,
 } from './constants.js';
