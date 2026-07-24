@@ -8,3 +8,5 @@
 export * from './types.js';
 export * from './ports.js';
 export * from './runtime.js';
+export * from './job-store.js';
+export * from './node.js';
