@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "assay": {
+      "command": "pnpm",
+      "args": ["--filter", "@assay/mcp", "exec", "tsx", "src/index.ts"],
+      "cwd": "/home/dev/Progetti/assay"
+    }
+  }
+}

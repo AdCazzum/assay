@@ -10,7 +10,10 @@
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "agent:live": "tsx scripts/run-agent.ts --target live",
+    "agent:good-provider": "tsx scripts/run-agent.ts --target good-provider",
+    "agent:bad-provider": "tsx scripts/run-agent.ts --target bad-provider"
   },
   "dependencies": {
     "@assay/cap-rugscore": "workspace:*",
