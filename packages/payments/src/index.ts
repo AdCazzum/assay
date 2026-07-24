@@ -16,5 +16,8 @@ export type {
   TransferHbarParams,
 } from './hedera-client.js';
 
+export { parseOperatorKey, assertKeyMatchesAccount, OperatorKeyError } from './operator-key.js';
+export type { HederaKeyType } from './operator-key.js';
+
 export { pollMirrorNode, toMirrorNodeTransactionId, MirrorNodeTimeoutError } from './mirror-node.js';
 export type { FetchLike, MirrorNodePollAttempt, MirrorNodePollConfig, MirrorNodePollState } from './mirror-node.js';

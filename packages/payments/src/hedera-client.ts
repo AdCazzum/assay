@@ -4,7 +4,9 @@
  * can drive an obviously-named fake instead of a live testnet account.
  */
 
-import { AccountId, Client, Hbar, PrivateKey, TransferTransaction } from '@hashgraph/sdk';
+import { AccountId, Client, Hbar, TransferTransaction } from '@hashgraph/sdk';
+
+import { parseOperatorKey, type HederaKeyType } from './operator-key.js';
 
 export type HederaNetwork = 'testnet' | 'mainnet' | 'previewnet';
 
@@ -26,6 +28,12 @@ export type HederaSdkClientConfig = {
   operatorId: string;
   operatorKey: string;
   network?: HederaNetwork;
+  /**
+   * The curve of `operatorKey`. Omit for a DER-encoded key (which names its
+   * own curve) or to take the ECDSA default for bare hex. See operator-key.ts
+   * for why this is never guessed silently.
+   */
+  keyType?: HederaKeyType;
 };
 
 function makeClient(network: HederaNetwork): Client {
@@ -47,11 +55,7 @@ function makeClient(network: HederaNetwork): Client {
 export function createHederaSdkTransferClient(config: HederaSdkClientConfig): HederaTransferClient {
   const network = config.network ?? 'testnet';
   const operatorId = AccountId.fromString(config.operatorId);
-  // `PrivateKey.fromString` auto-detects DER-encoded ED25519 vs ECDSA, which
-  // covers both key formats the Hedera testnet portal hands out. Unverified
-  // against a live account: flag this as the first thing to check once
-  // credentials land (see README "Unproven").
-  const operatorKey = PrivateKey.fromString(config.operatorKey);
+  const operatorKey = parseOperatorKey(config.operatorKey, config.keyType);
 
   const client = makeClient(network);
   client.setOperator(operatorId, operatorKey);

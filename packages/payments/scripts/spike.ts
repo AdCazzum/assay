@@ -29,6 +29,7 @@ import dotenv from 'dotenv';
 import { createHederaPaymentsPort } from '../src/payments.js';
 import { createHederaSdkTransferClient } from '../src/hedera-client.js';
 import type { HederaNetwork } from '../src/hedera-client.js';
+import { assertKeyMatchesAccount, parseOperatorKey, type HederaKeyType } from '../src/operator-key.js';
 
 const repoRoot = path.resolve(fileURLToPath(import.meta.url), '../../../..');
 dotenv.config({ path: path.join(repoRoot, '.env') });
@@ -63,16 +64,28 @@ function readConfig() {
     operatorId,
     operatorKey,
     network,
+    keyType: process.env.HEDERA_KEY_TYPE as HederaKeyType | undefined,
     payToAccountId: process.env.SPIKE_PAY_TO_ACCOUNT_ID || operatorId,
     amountHbar: Number(process.env.SPIKE_AMOUNT_HBAR ?? '0.01'),
   };
 }
 
 async function main(): Promise<boolean> {
-  const { operatorId, operatorKey, network, payToAccountId, amountHbar } = readConfig();
+  const { operatorId, operatorKey, network, keyType, payToAccountId, amountHbar } = readConfig();
   const requestHash = `spike-${Date.now()}`;
 
-  const client = createHederaSdkTransferClient({ operatorId, operatorKey, network });
+  // Preflight. Signing with a key that does not control the account fails at
+  // the network as INVALID_SIGNATURE, which says nothing about the real cause.
+  // One mirror-node read turns that into a message naming the right curve.
+  const parsedKey = parseOperatorKey(operatorKey, keyType);
+  await assertKeyMatchesAccount({
+    accountId: operatorId,
+    key: parsedKey,
+    mirrorNodeBaseUrl: MIRROR_NODE_BASE_URL[network],
+  });
+  console.log(`[spike] operator key verified against ${operatorId}`);
+
+  const client = createHederaSdkTransferClient({ operatorId, operatorKey, network, keyType });
   const attempts: string[] = [];
   const port = createHederaPaymentsPort({
     client,
