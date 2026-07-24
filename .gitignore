@@ -18,5 +18,6 @@ build/
 # editor / agent local state
 .emdash/
 .claude/settings.local.json
+.claude/worktrees/
 .DS_Store
 *.log

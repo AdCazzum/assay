@@ -90,32 +90,60 @@ directly: pending → success, pending → a final non-SUCCESS result, and
 pending → timeout. The Hedera SDK itself is not unit-tested — `hedera-client.ts`
 is exercised for real by `scripts/spike.ts`, once credentials exist.
 
-## Unproven
+## Proven on live testnet
 
-**The live round trip has not been executed.** There is no `.env` in this
-repo (no Hedera testnet operator account yet), so nothing here has touched
-testnet or a real mirror node. What's actually verified:
+The round trip ran against Hedera testnet on 2026-07-24, operator `0.0.9695801`:
 
-- `pnpm --filter @assay/payments typecheck` and `test` pass (14 tests: the
-  mirror-node poll state machine, requestHash binding, bond deposit/slash,
-  double-slash rejection).
-- `scripts/spike.ts` fails cleanly (one-line message to stderr, exit code 1,
-  no stack trace) when `HEDERA_OPERATOR_ID`/`HEDERA_OPERATOR_KEY` are unset —
-  this was actually run and observed, not assumed.
-- `PrivateKey.fromString(...)` is used for the operator key, which
-  auto-detects DER-encoded ED25519 vs ECDSA. That covers what the Hedera
-  testnet portal typically hands out, but it's unverified against a real key;
-  it's the first thing to check if `scripts/spike.ts` fails once credentials
-  land.
-- The default poll timeout (15s) and interval (1s) are informed guesses based
-  on documented mirror node lag, not measured against a live testnet mirror
-  node.
+```
+[spike] operator key verified against 0.0.9695801
+[spike] paying 0.01 HBAR: 0.0.9695801 -> 0.0.9695801
+[spike] requestHash (memo): spike-1784929790998
+[spike] submitted, txId=0.0.9695801@1784929785.951608160
+  poll #1 at   26ms: pending
+  poll #5 at 4116ms: success
+[spike] confirmed=true settle_time_ms=4116
+```
+
+Verified on the mirror node: `result=SUCCESS`, memo decodes to
+`spike-1784929790998` (so the requestHash really is bound to the payment, which
+is what payment-gating rests on), fee 0.0014 HBAR.
+
+**Settlement took 4.1s wall clock**, of which consensus is roughly 3s and the
+rest is mirror-node ingestion lag. The 15s default poll timeout has ~4x
+headroom, which is the right order of magnitude but worth re-measuring on
+conference wifi before the demo. Do not claim "sub-second settlement" on stage:
+consensus is fast, but the number a viewer sees is the confirm loop, and that is
+about four seconds.
+
+### The operator key trap, and why there is a preflight
+
+`PrivateKey.fromString()` does not detect the curve. Given a bare 32-byte hex
+string it parses it as ED25519 and returns a valid key that is simply not
+yours. Construction succeeds, and the failure surfaces later at the network as
+`INVALID_SIGNATURE`, which reads like a permissions problem.
+
+This is not hypothetical: it is exactly what happened on the first live run.
+The portal issues ECDSA accounts by default, `fromString` produced the ED25519
+reading of the same bytes, and every node rejected the transfer.
+
+So `parseOperatorKey` never guesses silently (DER names its own curve, bare hex
+defaults to ECDSA, and `HEDERA_KEY_TYPE` overrides), and `scripts/spike.ts`
+calls `assertKeyMatchesAccount` first, comparing the derived public key against
+the one the account publishes on the mirror node. A wrong key now fails at
+startup with a message naming the curve you wanted, before anything is signed.
+
+### Still unproven
+
+- `postBond` / `slash` have only been exercised against the fake client. The
+  live path is the same `TransferTransaction` the proven `pay` uses, so the risk
+  is low, but it is not the same as having run it.
+- Only a self-transfer has been executed. A real provider account as the payee
+  is untested (set `SPIKE_PAY_TO_ACCOUNT_ID`).
 
 If you see a stray `undefined` line on stdout when running via
 `pnpm --filter @assay/payments exec tsx scripts/spike.ts` and it fails, check
-stderr: that `undefined` comes from pnpm's own `--filter … exec` failure
-reporting (reproduced with an unrelated script), not from this code. Running
-`tsx scripts/spike.ts` directly from this package's directory does not show it.
+stderr: that `undefined` comes from pnpm's own `--filter ... exec` failure
+reporting (reproduced with an unrelated script), not from this code.
 
 ## Running the spike once credentials exist
 
