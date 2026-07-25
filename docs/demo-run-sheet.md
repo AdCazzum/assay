@@ -169,6 +169,21 @@ capture above reproduces the same 115s run, the same two-column content, and the
 looks stalled" warning at the same ~32s closing silence (a real gap in the original run, not an
 artifact of replay).
 
+## Launching it
+
+```bash
+./scripts/demo.sh reset       # ~57s, restores both providers. Never on stage.
+bash -lc './scripts/demo.sh'  # live: a real agent, real networks, ~115s
+./scripts/demo.sh rehearsal   # offline replay of the last capture
+```
+
+The wrapper exists because two separate things are needed and having only one is the common
+failure. `CLAUDE_CODE_OAUTH_TOKEN` is exported **above** the interactive guard in `~/.bashrc`,
+so a login shell has it and the agent can authenticate. `mise` (node, pnpm) is activated
+**below** that guard, so a login shell does **not** have it. That means plain
+`bash -lc 'pnpm ...'` fails with `pnpm: command not found`, which is what the docs used to
+tell you to run.
+
 ## Before every run
 
 The reputation records are real and every run changes them, so reset first:
