@@ -3,8 +3,9 @@
     "assay": {
       "command": "pnpm",
       "args": ["--filter", "@assay/mcp", "exec", "tsx", "src/index.ts"],
+      "cwd": "/home/dev/Progetti/assay",
       "env": {
-        "ASSAY_LOOP_EVENTS_SINK": ".assay/loop-events.ndjson"
+        "ASSAY_LOOP_EVENTS_SINK": "/home/dev/Progetti/assay/.assay/loop-events.ndjson"
       }
     }
   }
