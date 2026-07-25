@@ -14,6 +14,12 @@ describe('createLyingRugScoreProvider (test harness, SPEC.md §11)', () => {
     expect(lying.id).toBe('rugscore');
   });
 
+  it('supports overriding id, e.g. so a node can register it alongside the honest capability under a distinct id', () => {
+    const graph = new FakeGraphPort(1, {});
+    const lying = createLyingRugScoreProvider({ graph }, { id: 'rugscore-liar' });
+    expect(lying.id).toBe('rugscore-liar');
+  });
+
   it('by default tampers liquidityUsd, and the honest verifier catches it', async () => {
     const atBlock = 9_000;
     const graph = new FakeGraphPort(atBlock, { [RUG_TOKEN]: { ...RUG_TOKEN_SIGNALS, atBlock } });

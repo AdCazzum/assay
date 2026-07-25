@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { config as loadEnv } from 'dotenv';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createCapabilityRegistry } from '@assay/core';
+import { createCapabilityRegistry, createEventStamper } from '@assay/core';
 import { createEnsRegistry } from '@assay/registry';
 import {
   createHederaPaymentsPort,
@@ -25,12 +25,25 @@ import {
   type HederaNetwork,
 } from '@assay/payments';
 import { createGraphAdapter } from '@assay/graph';
-import { createRugScoreCapability } from '@assay/cap-rugscore';
+import { createRugScoreCapability, createLyingRugScoreProvider } from '@assay/cap-rugscore';
 import { createAssayMcpServer, SERVER_NAME, SERVER_VERSION } from './server.js';
 import { createLiveAssayNode } from './live-node.js';
+import { createLoopEventSink } from './loop-event-sink.js';
 import type { AssayNodePort } from './node-port.js';
 
 export const APP_ID = '@assay/mcp';
+
+/**
+ * The lying-provider harness's own capability id (issues #93/#94's
+ * capability-wiring fix, see `buildLiveNodeFromEnv` below). Exported for
+ * this app's own tests. `packages/registry/scripts/reset-demo-state.ts`
+ * cannot import this (a package script importing from an app would be a
+ * backwards dependency this repo's layering never allows elsewhere), so it
+ * repeats this exact string as its own `LYING_CAPABILITY_ID` constant with a
+ * comment pointing back here -- keep the two in sync by hand if this ever
+ * changes.
+ */
+export const LYING_CAPABILITY_ID = 'rugscore-liar';
 
 export { createAssayMcpServer, SERVER_NAME, SERVER_VERSION } from './server.js';
 export type { AssayNodePort, DiscoverResult } from './node-port.js';
@@ -100,10 +113,36 @@ export function buildLiveNodeFromEnv(): AssayNodePort {
   const network = (process.env.HEDERA_NETWORK ?? 'testnet') as HederaNetwork;
   const keyType = process.env.HEDERA_KEY_TYPE as HederaKeyType | undefined;
 
+  // The NDJSON event sink (issue #93). Unset (the default): no sink is
+  // opened, `onLoopEvent`/`onReputationWriteAttempt`/`onConfirmAttempt` below
+  // are all left undefined, and every emit call in `@assay/core`/
+  // `@assay/registry`/`@assay/payments` is already a documented no-op when
+  // its hook is absent -- so this is inert exactly like the hooks already
+  // are, no behaviour change. Set: one `createEventStamper()` is shared
+  // between the node's own real LoopEvents and the sink's own synthesized
+  // heartbeat lines, so `seq` stays one strictly-increasing sequence across
+  // both (`loop-event-sink.ts`'s own doc comment on why that cast is safe).
+  //
+  // **Never touches stdout.** `StdioServerTransport` below owns stdout as the
+  // MCP JSON-RPC channel; this sink writes only to the file at
+  // `ASSAY_LOOP_EVENTS_SINK`, and `createLoopEventSink` never throws even if
+  // that path is unwritable (see its own tests) -- a broken sink narrates
+  // nothing further, it does not break a tool call.
+  const sinkPath = process.env.ASSAY_LOOP_EVENTS_SINK;
+  const stamp = createEventStamper();
+  const sink = sinkPath ? createLoopEventSink(sinkPath, stamp) : undefined;
+
   const registry = createEnsRegistry({
     rpcUrl: env.SEPOLIA_RPC_URL,
     privateKey: env.SEPOLIA_PRIVATE_KEY,
     parentName: env.ENS_PARENT_NAME,
+    // The ENS reputation write's own ~3s submitted/pending/confirmed
+    // heartbeat (issue #93's companion wire, see loop-event-sink.ts): the
+    // 8-25s write is the single longest deterministic silence in the demo,
+    // and core's own LoopEvent stream only reports its start and its end.
+    onReputationWriteAttempt: sink
+      ? (info) => sink.sinkHeartbeat({ kind: 'heartbeat', of: 'reputation-write', ...info })
+      : undefined,
   });
 
   const transferClient = createHederaSdkTransferClient({
@@ -135,12 +174,35 @@ export function buildLiveNodeFromEnv(): AssayNodePort {
     bondAccountId,
     mirrorNodeBaseUrl,
     fetchImpl: fetch,
+    // The mirror-node payment-confirm heartbeat (graft from Proposal 1, see
+    // loop-event-sink.ts's module doc comment): lower priority than the
+    // reputation-write one above since confirm is measured at ~4s not
+    // 8-25s, but it shares the exact same sink mechanism, so it costs one
+    // more wire, not a second mechanism.
+    onConfirmAttempt: sink
+      ? (info) => sink.sinkHeartbeat({ kind: 'heartbeat', of: 'payment-confirm', ...info })
+      : undefined,
   });
 
   const graph = createGraphAdapter({ apiKey: env.GRAPH_API_KEY });
 
   const capabilities = createCapabilityRegistry();
   capabilities.register(createRugScoreCapability({ graph }));
+  // The declared lying-provider harness (SPEC.md §11), registered under its
+  // own distinct capability id so it can coexist with the honest one in this
+  // single `CapabilityRegistry` (`createCapabilityRegistry.register` keys
+  // purely on `capability.id`; two entries under `'rugscore'` would throw
+  // `DuplicateCapabilityError`). This is what makes `liar.<parent>` dispatch
+  // to a capability that actually lies, rather than colliding with the
+  // honest one and silently running honest code under a dishonest name --
+  // see `packages/registry/scripts/reset-demo-state.ts`, which republishes
+  // `liar.<parent>`'s manifest with `capabilityId: LYING_CAPABILITY_ID` to
+  // match. Verified by reading the code (not assumed): before this change,
+  // `liar.<parent>`'s manifest carried whatever `capabilityId` it already
+  // had on-chain (`rugscore`, spread from `before.manifest`), so calling
+  // `pay_and_call` on it ran the honest capability -- there was no live lie
+  // to catch, only a rehearsed transcript of one.
+  capabilities.register(createLyingRugScoreProvider({ graph }, { id: LYING_CAPABILITY_ID }));
 
   // The two names already live on Sepolia as of this writing (SPEC.md §7,
   // docs/demo-run-sheet.md): the good provider and the sacrificial "liar"
@@ -160,6 +222,8 @@ export function buildLiveNodeFromEnv(): AssayNodePort {
     challengerAccountId,
     ensParentName: env.ENS_PARENT_NAME,
     candidateProviderNames,
+    eventStamper: stamp,
+    onLoopEvent: sink ? (event) => sink.sinkLoopEvent(event) : undefined,
   });
 }
 

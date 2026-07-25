@@ -6,7 +6,7 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "description": "Drives the whole Assay demo from one keyboard, narrating the live loop on one screen",
+  "description": "A real Claude agent driving the Assay MCP server, its reasoning and the live loop shown side by side",
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",

@@ -1,9 +1,19 @@
 # Wiring a live Claude agent to the Assay loop (issue #24)
 
+**Since issues #93/#94:** `prompt.md` now carries the fuller mission (`list_providers`,
+`verify_claim`, `challenge`, `rate`, not just `discover`/`pay_and_call`) and `ALLOWED_TOOLS`
+below was widened to match. The scenic, two-pane runner that actually shows this live is
+`apps/demo` (`pnpm --filter @assay/demo exec tsx src/index.ts live`), documented in
+`docs/demo-run-sheet.md`. This directory's own `run-agent.ts`/three targets still work exactly
+as described below (they predate and are independent of the scenic runner's own agent-spawning
+code in `apps/demo/src/scenic-runner.ts`) and remain useful for capturing a raw transcript
+without the two-column display.
+
 This directory is the "agent-native" half of the demo: a real Claude Code agent
 (not a script, not an `if`) drives the Assay MCP server (`discover` /
-`pay_and_call` / `challenge` / `rate`), reads a provider's reputation, and
-decides for itself whether the price is worth the risk.
+`pay_and_call` / `challenge` / `rate` / `verify_claim` / `list_providers` /
+`get_job` / `list_jobs`), reads a provider's reputation, and decides for itself whether the
+price is worth the risk.
 
 ## Files
 
