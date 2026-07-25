@@ -10,14 +10,15 @@ biggest offender is not the one I expected:
 
 | step | measured | SPEC §10 budget |
 |---|---|---|
-| agent: discover, reason, pay, serve | **42 to 57s** (5 runs) | ~30s (10-40s beats) |
-| watchdog: serve, challenge, verify, slash, ENS write | **24.3s** | ~40s (40-80s beats) |
-| ENS write alone, inside that | 12.4 to 24.6s, median 16.4 | not budgeted |
+| agent: discover, reason, pay, serve | **42 to 57s** (6 runs) | ~30s (10-40s beats) |
+| watchdog: serve, challenge, verify, slash, ENS write | **19 to 43s** | ~40s (40-80s beats) |
+| ENS write alone, inside that | **8.3 to 24.6s**, median ~13s | not budgeted |
 | Hedera payment, submit to confirmed | 4.1s | |
 | Hedera slash, transfer alone | 0.4s | |
 
-Two runs back to back is **66 to 81 seconds of machine time** with no narration, no
-transitions, and nothing said out loud. There is no version of this that also fits an
+A full rehearsal on 2026-07-25 measured **50.4s** for the agent and **19.0s** for the
+watchdog: **69.4 seconds of machine time** with no narration, no transitions, and nothing
+said out loud. A later run of the same climax took 42.9s, so treat 70 to 95s as the range. There is no version of this that also fits an
 introduction and a closing line into 90 seconds.
 
 I had been treating the ENS write as the thing to engineer around. It is not. **The agent's
@@ -64,14 +65,21 @@ The reputation records are real and every rehearsal changes them, so reset first
 pnpm --filter @assay/registry exec tsx scripts/reset-demo-state.ts
 ```
 
-Takes ~25s (bond, then two ENS writes). It sets `rugscore.assay.eth` to score 78, jobs 14,
-zero slashes, and a bond of 6x the price, then reads it back off the resolver and prints
-`read-back matches target: OK`. **Do not run it on stage**, and do not skip it: without it
-the agent correctly declines to pay and the opening beat cannot happen (#64).
+Takes **~57s** (two providers, two real bonds, four ENS writes) and must end with
+`read-back matches target: OK`. **Do not run it on stage.** Do not skip it either: it fixes
+two different things, both found by rehearsing rather than by reading code.
 
-The watchdog slashes `liar.assay.eth`, not `rugscore.assay.eth`, so rehearsing the climax
-does not damage the record the opening depends on. Check that
-`WATCHDOG_PROVIDER_NAME` is unset or points at the sacrificial name.
+| | reset to | why |
+|---|---|---|
+| `rugscore.assay.eth` | score 78, 14 jobs, 0 slashes, bond 6x price | without it the agent correctly declines to pay and the opening beat cannot happen (#64) |
+| `liar.assay.eth` | score 88, 9 jobs, 1 slash, bond 6x price | without it the sacrificial provider sits at score 0 from earlier rehearsals, and a score at the floor cannot visibly drop. The climax would narrate "0 -> 0" with every log line still reading as success |
+
+The second one is the nastier failure: the challenge, verdict, slash and ENS write are all
+real either way, so nothing looks broken. The only symptom is that the number on screen does
+not move, which you notice on stage.
+
+The watchdog targets the sacrificial name, so rehearsing the climax never damages the record
+the opening depends on. Check `WATCHDOG_PROVIDER_NAME` is unset or points at it.
 
 Checklist:
 
