@@ -95,6 +95,31 @@ so that whole climax (re-bond, pay, serve, challenge, verify, slash, reputation)
 keypress, and it is the long one: comfortably inside the 19-43s range measured above, with
 the ENS write itself still the dominant cost.
 
+## What `verify_claim` changed, and what it did not
+
+Worth being precise about, because it is the one place the demo used to carry an asterisk.
+
+Before #84, the only way to act on a claim was `challenge`, which commits: it verifies, moves
+the job, slashes and writes reputation in one step. So a watchdog could not look before it
+leapt, and we disclosed on stage that its challenge was scripted because it had to be told
+which claim to dispute.
+
+`verify_claim` is the read-only half. An agent re-derives a claim at that claim's own block,
+sees what the chain says, and decides. Proven live on both legs at adjacent real blocks: an
+honest claim verifies true, and the declared lying-provider harness's tampered claim comes
+back `FALSE` with the claimed 1,000,056.51 against the chain's 56.51.
+
+**What did not change: the keyboard demo still triggers the challenge with a keypress.**
+`apps/demo` is a presenter-driven runner, so pressing `[4]` is you deciding, not a model
+deciding. Both statements are true and both belong on stage:
+
+- the capability for an agent to verify and then choose is real, and there is a transcript
+- in this particular run, a human pressed the key
+
+If you want the version where the model decides, that is the MCP path with the real agent, and
+it costs the 42 to 57 seconds of reasoning. Say which one the audience is watching. Claiming
+the keypress is agency is exactly the thing SPEC section 16 warns about.
+
 ## Before every run
 
 The reputation records are real and every rehearsal changes them, so reset first:
