@@ -131,6 +131,12 @@ Worth knowing before believing any "instant" claim about either chain:
 The ENS spread is wide and does not converge, which matters more to a demo run sheet than
 the median does. See `docs/demo-run-sheet.md`.
 
+## Reproducing this
+
+`TESTING.md` walks through every check, ordered so a failure tells you which of the three
+networks to blame. Levels 0 and 1 need no network at all. It also has a section on verifying
+the on-chain claims directly, without running anything.
+
 ## Status
 
 Built over a 36 hour hackathon by one person with Claude Code. The detailed design doc is
