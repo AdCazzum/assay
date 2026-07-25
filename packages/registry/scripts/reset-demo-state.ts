@@ -114,6 +114,26 @@ const DEFAULT_PROVIDER_ENDPOINT = 'http://localhost:8787/serve';
 const DEMO_DESCRIPTION =
   'Rug-pull risk score for an ERC-20 token, from block-pinned Uniswap v3 subgraph data via The Graph, verifiable at the claim block.';
 
+/**
+ * Must stay equal to `apps/mcp/src/index.ts`'s own `LYING_CAPABILITY_ID`
+ * (issues #93/#94's capability-wiring fix). A package script cannot import
+ * from an app (that would be a backwards dependency this repo's layering
+ * never allows elsewhere), so this repeats the literal instead -- keep the
+ * two in sync by hand if either ever changes.
+ *
+ * Why this matters: before this fix, `resetProvider`'s sacrificial-role call
+ * republished `liar.<parent>`'s manifest by spreading `...before.manifest`,
+ * i.e. whatever `capabilityId` was already on-chain -- which was
+ * `'rugscore'`, the honest capability's own id, since nothing had ever
+ * published a manifest under any other id. `apps/mcp`'s live server registers
+ * exactly one capability per id (`createCapabilityRegistry.register` throws
+ * `DuplicateCapabilityError` on a second registration under the same id), so
+ * `liar.<parent>` had to dispatch to the honest capability -- there was no
+ * live lie behind it to catch, only a rehearsed transcript of one (verified
+ * by reading `apps/mcp/src/index.ts` and this file directly, not assumed).
+ */
+const LYING_CAPABILITY_ID = 'rugscore-liar';
+
 const HASHSCAN_BASE_URL: Record<HederaNetwork, string> = {
   testnet: 'https://hashscan.io/testnet',
   mainnet: 'https://hashscan.io/mainnet',
@@ -157,8 +177,18 @@ async function resetProvider(opts: {
   bondMultiple: number;
   network: HederaNetwork;
   endpoint: string;
+  /**
+   * Overrides the republished manifest's `capabilityId` (issues #93/#94).
+   * Only the sacrificial ("liar") role passes this, and only as
+   * `LYING_CAPABILITY_ID`: without it, this function's default behaviour
+   * (spreading `...before.manifest`, see below) would keep whatever
+   * `capabilityId` is already on-chain, which is `'rugscore'` -- the honest
+   * capability's own id -- since nothing has ever published this name's
+   * manifest under any other id.
+   */
+  capabilityId?: string;
 }): Promise<boolean> {
-  const { name, role, buildReputation, registry, payments, bondMultiple, network, endpoint } = opts;
+  const { name, role, buildReputation, registry, payments, bondMultiple, network, endpoint, capabilityId } = opts;
   const tag = `[reset-demo:${role}]`;
 
   console.log('');
@@ -194,6 +224,7 @@ async function resetProvider(opts: {
     bondRef,
     endpoint,
     verifierHash,
+    ...(capabilityId ? { capabilityId } : {}),
   });
   console.log(`${tag} manifest tx: https://sepolia.etherscan.io/tx/${manifestTxHash}`);
 
@@ -274,6 +305,7 @@ async function main(): Promise<void> {
         name: `${sacrificialLabel}.${parentName}`,
         role: 'liar',
         buildReputation: buildSacrificialReputation,
+        capabilityId: LYING_CAPABILITY_ID,
         ...shared,
       });
     }
