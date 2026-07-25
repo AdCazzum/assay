@@ -1,89 +1,103 @@
 /**
- * The canonical happy-path event sequence: register through accept, no
- * challenge. Mirrors SPEC.md §10's 0-40s beats (discover -> pay + serve),
- * extended with register at the front and accept at the end so the whole
- * loop up to "optimistically valid" is covered.
- *
- * Values are shaped like the real thing (an ENS name, an HBAR price, a
- * HashScan testnet URL, a mainnet block number) but this file runs no
- * network call itself: it exists so the dashboard can be rehearsed with zero
- * network, per issue #30 / SPEC.md §14's rehearsal budget.
- *
- * The claim values below are not invented: they are the live-measured
- * numbers `cap-rugscore` got back from the real Uniswap v3 subgraph for USDC
- * (`0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`, #49 /
- * `packages/graph/README.md`) — ~$361.2M liquidity in its deepest pool, ages
- * 13,235,876 blocks, 36,491,026 swaps/mints/burns, 43.98% top-pool
- * concentration. Run through the real `scoreRugPullRisk` these signals score
- * 9 (low risk), which is what `serve` reports. This fixture used to narrate
- * `hasActiveMintRole`, a signal #49 removed because it could not be honestly
- * sourced from a block-pinned query (issue #54).
+ * The canonical happy-path event sequence: discover through accept, no
+ * challenge, against the real good provider (`rugscore.assay.eth`).
+ * Captured live from a real run on 2026-07-25T13:07:27.385Z by `apps/demo/scripts/capture-fixtures.ts`
+ * (issue #85) — every value below is a genuine Hedera/ENS/Graph artifact
+ * from that run, mapped through the exact same `@assay/dashboard`
+ * `createCoreEventMapper` the live demo drives, not hand-written.
+ * Regenerate rather than hand-edit if this drifts.
  */
 
 import type { LoopEvent } from '../events.js';
 
 export const HAPPY_PATH_EVENTS: readonly LoopEvent[] = [
   {
-    step: 'register',
-    status: 'running',
-    summary: 'publishing manifest + posting bond for rugscore.assay.eth...',
-  },
-  {
-    step: 'register',
-    status: 'ok',
-    summary: 'manifest published, 50 HBAR bond posted',
-    artifacts: [
-      { label: 'manifest tx', value: '0.0.9695801@1784930100.123456789' },
-      { label: 'bond tx', value: '0.0.9695801@1784930101.987654321' },
+    "step": "discover",
+    "status": "ok",
+    "summary": "resolved rugscore.assay.eth: 5 HBAR/call, score 78, 0 slashes",
+    "artifacts": [
       {
-        label: 'hashscan (bond)',
-        value: 'https://hashscan.io/testnet/transaction/0.0.9695801@1784930101.987654321',
+        "label": "ens name",
+        "value": "rugscore.assay.eth"
       },
-    ],
-  },
-  {
-    step: 'discover',
-    status: 'ok',
-    summary: 'resolved rugscore.assay.eth: 5 HBAR/call, score 92, 0 slashes',
-    artifacts: [
-      { label: 'ens name', value: 'rugscore.assay.eth' },
-      { label: 'price', value: '5 HBAR' },
-      { label: 'reputation', value: 'score 92, jobs 41, slashes 0' },
-    ],
-  },
-  {
-    step: 'pay',
-    status: 'running',
-    summary: 'paying 5 HBAR on Hedera testnet...',
-  },
-  {
-    step: 'pay',
-    status: 'ok',
-    summary: '5 HBAR paid, confirmed via mirror node in 2.4s',
-    artifacts: [
-      { label: 'tx', value: '0.0.1234567@1784930210.111222333' },
       {
-        label: 'hashscan',
-        value: 'https://hashscan.io/testnet/transaction/0.0.1234567@1784930210.111222333',
+        "label": "price",
+        "value": "5 HBAR"
       },
-    ],
+      {
+        "label": "reputation",
+        "value": "score 78, jobs 14, slashes 0"
+      },
+      {
+        "label": "bond",
+        "value": "30 HBAR"
+      }
+    ]
   },
   {
-    step: 'serve',
-    status: 'ok',
-    summary: 'rugScore.run(USDC 0xa0b8...eb48) -> score 9 (low risk)',
-    artifacts: [
-      { label: 'claim liquidityUsd', value: '361202208' },
-      { label: 'claim ageBlocks', value: '13235876' },
-      { label: 'claim txCount', value: '36491026' },
-      { label: 'claim topPoolConcentrationPct', value: '43.98' },
-      { label: 'atBlock', value: '22984210' },
-      { label: 'jobId', value: 'job-1' },
-    ],
+    "step": "pay",
+    "status": "running",
+    "summary": "assessed \"rugscore.assay.eth\": 5 HBAR, score 78 — Clean record: 0 slashes across 14 job(s). — paying..."
   },
   {
-    step: 'accept',
-    status: 'ok',
-    summary: 'job-1 accepted optimistically, no challenge raised',
+    "step": "pay",
+    "status": "running",
+    "summary": "5 HBAR paid, tx 0.0.9695801@1784984784.320798116, awaiting mirror-node confirmation..."
+  },
+  {
+    "step": "pay",
+    "status": "running",
+    "summary": "confirming 0.0.9695801@1784984784.320798116 via mirror node..."
+  },
+  {
+    "step": "pay",
+    "status": "ok",
+    "summary": "paid, confirmed via mirror node in 3.3s",
+    "artifacts": [
+      {
+        "label": "tx",
+        "value": "0.0.9695801@1784984784.320798116"
+      }
+    ]
+  },
+  {
+    "step": "serve",
+    "status": "ok",
+    "summary": "rugscore.run() -> {\"score\":9}",
+    "artifacts": [
+      {
+        "label": "claim liquidityUsd",
+        "value": "362129022.3835049"
+      },
+      {
+        "label": "claim ageBlocks",
+        "value": "13240212"
+      },
+      {
+        "label": "claim txCount",
+        "value": "36508101"
+      },
+      {
+        "label": "claim volumeUsd",
+        "value": "1020082615632.7941"
+      },
+      {
+        "label": "claim topPoolConcentrationPct",
+        "value": "44.06976671161385"
+      },
+      {
+        "label": "atBlock",
+        "value": "25609972"
+      },
+      {
+        "label": "jobId",
+        "value": "job-1"
+      }
+    ]
+  },
+  {
+    "step": "accept",
+    "status": "ok",
+    "summary": "job-1 accepted optimistically, valid until challenged"
   },
 ];

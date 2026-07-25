@@ -1,146 +1,226 @@
 /**
- * The "lying provider" event sequence: the demo's climax (SPEC.md §10,
- * 40-80s). The provider claims a mainnet thin/sketchy token (`GOODCAT`,
- * `0xd6c68bc8c862722e140e7b339ddf8a144a7d3530`) has deep liquidity; the
- * watchdog challenges it; the verifier re-derives `liquidityUsd` from The
- * Graph at the same `atBlock` and gets back the real, tiny number; the
- * provider's bond is slashed and its ENS reputation drops live.
- *
- * This used to narrate `hasActiveMintRole`, a boolean signal #49 removed
- * because it could not be honestly sourced from a block-pinned subgraph
- * query (issue #54 falls out of #49). `liquidityUsd` is the real replacement
- * and reads better from a stage: GOODCAT's one and only pool genuinely holds
- * $56.51 of the deepest kind of on-chain proof there is
- * (`packages/graph/README.md`'s "thin/sketchy contrast, live and real"), and
- * the lying provider claims north of a million. That gap is legible from
- * across a room in a way a boolean never was.
- *
- * SPEC.md §11 is explicit that the lying provider is a declared test
- * harness, not a faked sponsor integration: the challenge, the verifier
- * re-derivation, the slash tx and the reputation write are all the real
- * paths (`@assay/cap-rugscore`'s `createLyingRugScoreProvider` only tampers
- * the claim it serves), only the provider's claim is deliberately wrong.
+ * The lying-provider climax: discover through the ENS reputation write,
+ * against the sacrificial provider (`liar.assay.eth`) running
+ * `@assay/cap-rugscore`'s `createLyingRugScoreProvider` (SPEC.md §11: a
+ * declared test harness, not a faked sponsor integration — the bond, the
+ * payment, the verifier's re-derivation from The Graph, the slash and the
+ * ENS write are all real). Captured live on 2026-07-25T13:07:27.385Z by
+ * `apps/demo/scripts/capture-fixtures.ts` (issue #85); every tx id, block
+ * number and claim value below is genuine. Regenerate rather than hand-edit
+ * if this drifts.
  */
 
 import type { LoopEvent } from '../events.js';
 
 export const SLASH_EVENTS: readonly LoopEvent[] = [
   {
-    step: 'discover',
-    status: 'ok',
-    summary: 'resolved rugscore.assay.eth: 5 HBAR/call, score 92, 0 slashes',
-    artifacts: [
-      { label: 'ens name', value: 'rugscore.assay.eth' },
-      { label: 'reputation', value: 'score 92, jobs 41, slashes 0' },
-    ],
-  },
-  {
-    step: 'pay',
-    status: 'ok',
-    summary: '5 HBAR paid, confirmed via mirror node in 1.9s',
-    artifacts: [
-      { label: 'tx', value: '0.0.1234567@1784930500.222333444' },
+    "step": "discover",
+    "status": "ok",
+    "summary": "resolved liar.assay.eth: 5 HBAR/call, score 88, 1 slashes",
+    "artifacts": [
       {
-        label: 'hashscan',
-        value: 'https://hashscan.io/testnet/transaction/0.0.1234567@1784930500.222333444',
+        "label": "ens name",
+        "value": "liar.assay.eth"
       },
-    ],
-  },
-  {
-    step: 'serve',
-    status: 'ok',
-    summary:
-      '[LYING PROVIDER, declared test harness] rugScore.run(GOODCAT 0xd6c6...3530) -> score 100 (high risk), but claims $1,000,056.51 of liquidity',
-    artifacts: [
-      { label: 'claim liquidityUsd', value: '1000056.51  (claimed)' },
-      { label: 'claim topPoolConcentrationPct', value: '100' },
-      { label: 'atBlock', value: '22985614' },
-      { label: 'jobId', value: 'job-2' },
-    ],
-  },
-  {
-    step: 'accept',
-    status: 'ok',
-    summary: 'job-2 accepted optimistically, valid until challenged',
-  },
-  {
-    step: 'challenge',
-    status: 'ok',
-    summary: 'watchdog challenges job-2, claim "liquidityUsd"',
-    artifacts: [{ label: 'jobId', value: 'job-2' }],
-  },
-  {
-    step: 'verify',
-    status: 'running',
-    summary: 're-deriving liquidityUsd from The Graph at block 22985614...',
-  },
-  {
-    step: 'verify',
-    status: 'ok',
-    summary: 'verdict: FALSE — claim does not match The Graph at the same block',
-    artifacts: [
-      { label: 'claimed', value: 'liquidityUsd = 1000056.51' },
-      { label: 'actual (The Graph, block 22985614)', value: 'liquidityUsd = 56.51' },
       {
-        label: 'reason',
-        value: 'claimed liquidityUsd=1000056.51 at block 22985614, but The Graph reports 56.51',
+        "label": "price",
+        "value": "5 HBAR"
       },
-    ],
-  },
-  {
-    step: 'slash',
-    status: 'running',
-    summary: 'slashing bond-17 to the challenger...',
-  },
-  {
-    step: 'slash',
-    status: 'ok',
-    summary: '50 HBAR bond slashed to the watchdog',
-    artifacts: [
-      { label: 'bondRef', value: 'bond-17-0.0.9695801@1784930101.987654321' },
-      { label: 'tx', value: '0.0.9695801@1784930610.555666777' },
       {
-        label: 'hashscan',
-        value: 'https://hashscan.io/testnet/transaction/0.0.9695801@1784930610.555666777',
+        "label": "reputation",
+        "value": "score 88, jobs 9, slashes 1"
       },
-    ],
-  },
-  // The ENS reputation write is a real Sepolia read-modify-write that took
-  // ~12.5s in the one live sample measured so far (#53), reported through
-  // `@assay/registry`'s `onReputationWriteAttempt` hook: `reading` (the
-  // getText round trip), then `writing` heartbeats every ~3s while the tx
-  // mines, then `done`. These `running` events mirror those phases 1:1 so
-  // the wait reads as visible progress rather than a frozen screen — the
-  // dashboard's step model already renders `running` distinctly from
-  // `pending`/`ok` (see `render.ts`), this fixture is what exercises it here.
-  {
-    step: 'reputation',
-    status: 'running',
-    summary: 'reading current rugscore.assay.eth reputation from ENS (Sepolia)...',
+      {
+        "label": "bond",
+        "value": "30 HBAR"
+      }
+    ]
   },
   {
-    step: 'reputation',
-    status: 'running',
-    summary: 'writing reputation update to ENS (Sepolia)... submitted, waiting for confirmation (3s)',
+    "step": "pay",
+    "status": "running",
+    "summary": "assessed \"liar.assay.eth\": 5 HBAR, score 88 — 1 of 9 job(s) were slashed (11.1% slash ratio). The slash ratio matters more than the raw score. — paying..."
   },
   {
-    step: 'reputation',
-    status: 'running',
-    summary: 'writing reputation update to ENS (Sepolia)... still mining (6s)',
+    "step": "pay",
+    "status": "running",
+    "summary": "5 HBAR paid, tx 0.0.9695801@1784984809.586986344, awaiting mirror-node confirmation..."
   },
   {
-    step: 'reputation',
-    status: 'running',
-    summary: 'writing reputation update to ENS (Sepolia)... still mining (9s)',
+    "step": "pay",
+    "status": "running",
+    "summary": "confirming 0.0.9695801@1784984809.586986344 via mirror node..."
   },
   {
-    step: 'reputation',
-    status: 'ok',
-    summary: 'rugscore.assay.eth reputation updated on ENS (Sepolia), confirmed after 12.5s',
-    artifacts: [
-      { label: 'score', value: '92 -> 41 (-51)' },
-      { label: 'slashes', value: '0 -> 1' },
-      { label: 'ens tx', value: 'sepolia:0xabc123...def456' },
-    ],
+    "step": "pay",
+    "status": "ok",
+    "summary": "paid, confirmed via mirror node in 4.3s",
+    "artifacts": [
+      {
+        "label": "tx",
+        "value": "0.0.9695801@1784984809.586986344"
+      }
+    ]
+  },
+  {
+    "step": "serve",
+    "status": "ok",
+    "summary": "[LYING PROVIDER, declared test harness] rugscore.run() -> {\"score\":99}",
+    "artifacts": [
+      {
+        "label": "claim liquidityUsd",
+        "value": "1000056.5133489597"
+      },
+      {
+        "label": "claim ageBlocks",
+        "value": "7597"
+      },
+      {
+        "label": "claim txCount",
+        "value": "2"
+      },
+      {
+        "label": "claim volumeUsd",
+        "value": "0"
+      },
+      {
+        "label": "claim topPoolConcentrationPct",
+        "value": "100"
+      },
+      {
+        "label": "atBlock",
+        "value": "25609974"
+      },
+      {
+        "label": "jobId",
+        "value": "job-1"
+      }
+    ]
+  },
+  {
+    "step": "accept",
+    "status": "ok",
+    "summary": "job-1 accepted optimistically, valid until challenged"
+  },
+  {
+    "step": "challenge",
+    "status": "running",
+    "summary": "disputing claim \"liquidityUsd\" on job \"job-1\"..."
+  },
+  {
+    "step": "challenge",
+    "status": "ok",
+    "summary": "challenge on claim \"liquidityUsd\" adjudicated"
+  },
+  {
+    "step": "verify",
+    "status": "ok",
+    "summary": "verdict: FALSE — claim \"liquidityUsd\" did not hold up. claimed liquidityUsd=1000056.5133489597 at block 25609974, but The Graph reports 56.51334895971466",
+    "artifacts": [
+      {
+        "label": "reason",
+        "value": "claimed liquidityUsd=1000056.5133489597 at block 25609974, but The Graph reports 56.51334895971466"
+      }
+    ]
+  },
+  {
+    "step": "slash",
+    "status": "running",
+    "summary": "slashing bond to the challenger..."
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (currently score 88, jobs 9, slashes 1)..."
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "reading current reputation from ENS (Sepolia)..."
+  },
+  {
+    "step": "slash",
+    "status": "ok",
+    "summary": "bond slashed to the challenger",
+    "artifacts": [
+      {
+        "label": "tx",
+        "value": "0.0.9695801@1784984811.289048011"
+      }
+    ]
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (Sepolia)... submitted, waiting for confirmation (0s)"
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (Sepolia)... still mining (3s)"
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (Sepolia)... still mining (6s)"
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (Sepolia)... still mining (9s)"
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (Sepolia)... still mining (12s)"
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (Sepolia)... still mining (15s)"
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (Sepolia)... still mining (18s)"
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (Sepolia)... still mining (21s)"
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (Sepolia)... still mining (24s)"
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (Sepolia)... still mining (27s)"
+  },
+  {
+    "step": "reputation",
+    "status": "running",
+    "summary": "writing reputation update to ENS (Sepolia)... confirmed on-chain, finalizing (28s)"
+  },
+  {
+    "step": "reputation",
+    "status": "ok",
+    "summary": "reputation updated on ENS (Sepolia), confirmed after 28.6s",
+    "artifacts": [
+      {
+        "label": "score",
+        "value": "88 -> 58"
+      },
+      {
+        "label": "slashes",
+        "value": "1 -> 2"
+      },
+      {
+        "label": "ens tx",
+        "value": "0xf0ba3572f5a7c105126129911772d7a0c3cb3d238be145e0964aeaa543b5c0e9"
+      }
+    ]
   },
 ];

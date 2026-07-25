@@ -17,6 +17,7 @@
 export * from './events.js';
 export * from './render.js';
 export * from './sink.js';
+export * from './from-core.js';
 export { HAPPY_PATH_EVENTS } from './fixtures/happy-path.js';
 export { SLASH_EVENTS } from './fixtures/slash.js';
 

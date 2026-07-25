@@ -17,13 +17,28 @@ something that drives or polls the loop:
   every time an event arrives (clearing the screen so it reads as one live
   view, not a scrolling log); `replay()` turns a fixture array into a paced
   async source for rehearsal.
-- `fixtures/` — two canonical event sequences: `happy-path.ts` (register
-  through accept, no challenge) and `slash.ts` (the lying-provider climax:
-  challenge -> verify FALSE -> slash -> reputation drop).
+- `from-core.ts` — maps `@assay/core`'s own `LoopEvent` vocabulary
+  (`packages/core/src/events.ts`, issue #83) onto this package's `LoopEvent`
+  shape (issue #85). `createCoreEventMapper()` builds a stateful mapper (it
+  remembers when a payment landed, so a later confirmation can report real
+  elapsed seconds); `mapCoreEvent()` is the stateless one-off form used in
+  tests. This is the **only** file here that imports `@assay/core` — every
+  other module stays exactly as core-independent as before.
+- `fixtures/` — two canonical event sequences, **captured from a real run**
+  (`apps/demo/scripts/capture-fixtures.ts`, issue #85) rather than
+  hand-written: `happy-path.ts` (discover through accept against the real
+  good provider, no challenge) and `slash.ts` (the lying-provider climax:
+  discover through the ENS reputation write, against the real sacrificial
+  provider running `@assay/cap-rugscore`'s declared lying-provider harness).
+  Every tx id, block number and claim value in them is genuine; regenerate
+  them by re-running the capture script rather than hand-editing.
 
-Whoever wires the live demo (apps/mcp / apps/watchdog / apps/provider) pushes
-`LoopEvent`s into an `AsyncIterable` and hands it to `attach()`; this package
-never imports `@assay/core` and never calls out to a network.
+`apps/demo` is what actually drives this live: it composes the real adapters
+and `@assay/core`'s loop, wires each `AssayNode`'s `onLoopEvent` through
+`createCoreEventMapper()`, and pushes the mapped events into this package's
+renderer. This package itself never imports a network client and never
+drives the loop; `from-core.ts` is the one seam that knows core's vocabulary
+exists, and even it only maps, it never calls anything.
 
 ## Running it
 
@@ -51,62 +66,63 @@ a couple of ad hoc sequences for the failure and empty-state degrade paths.
 
 This is `render(SLASH_EVENTS, { color: false })`, i.e. what
 `tsx src/index.ts slash` prints frame by frame minus the color codes and
-screen clears, pasted here so it can be reviewed without running anything:
+screen clears, pasted here so it can be reviewed without running anything.
+Every value below is real, captured live (see `fixtures/slash.ts`'s own doc
+comment for when and how):
 
 ```
 ASSAY — reputation + payment rail
 
 [○] Register   (pending)
-[✔] Discover   resolved rugscore.assay.eth: 5 HBAR/call, score 92, 0 slashes
-      ens name: rugscore.assay.eth
-      reputation: score 92, jobs 41, slashes 0
-[✔] Pay        5 HBAR paid, confirmed via mirror node in 1.9s
-      tx: 0.0.1234567@1784930500.222333444
-      hashscan: https://hashscan.io/testnet/transaction/0.0.1234567@1784930500.222333444
-[✔] Serve      [LYING PROVIDER, declared test harness] rugScore.run(TOKEN_RUG) -> score 88 (low risk)
-      claim hasActiveMintRole: false  (claimed)
-      atBlock: 21050900
-      jobId: job-2
-[✔] Accept     job-2 accepted optimistically, valid until challenged
-[✔] Challenge  watchdog challenges job-2, claim "hasActiveMintRole"
-      jobId: job-2
-[✔] Verify     verdict: FALSE — claim does not match The Graph at the same block
-      claimed: hasActiveMintRole = false
-      actual (The Graph, block 21050900): hasActiveMintRole = true
-[✔] Slash      50 HBAR bond slashed to the watchdog
+[✔] Discover   resolved liar.assay.eth: 5 HBAR/call, score 88, 1 slashes
+      ens name: liar.assay.eth
+      price: 5 HBAR
+      reputation: score 88, jobs 9, slashes 1
+      bond: 30 HBAR
+[✔] Pay        paid, confirmed via mirror node in 4.3s
+      tx: 0.0.9695801@1784984809.586986344
+[✔] Serve      [LYING PROVIDER, declared test harness] rugscore.run() -> {"score":99}
+      claim liquidityUsd: 1000056.5133489597
+      claim ageBlocks: 7597
+      claim txCount: 2
+      claim volumeUsd: 0
+      claim topPoolConcentrationPct: 100
+      atBlock: 25609974
+      jobId: job-1
+[✔] Accept     job-1 accepted optimistically, valid until challenged
+[✔] Challenge  challenge on claim "liquidityUsd" adjudicated
+[✔] Verify     verdict: FALSE — claim "liquidityUsd" did not hold up. claimed liquidityUsd=1000056.5133489597 at block 25609974, but The Graph reports 56.51334895971466
+      reason: claimed liquidityUsd=1000056.5133489597 at block 25609974, but The Graph reports 56.51334895971466
+[✔] Slash      bond slashed to the challenger
   >>> BOND SLASHED <<<
-      bondRef: bond-17-0.0.9695801@1784930101.987654321
-      tx: 0.0.9695801@1784930610.555666777
-      hashscan: https://hashscan.io/testnet/transaction/0.0.9695801@1784930610.555666777
-[✔] Reputation rugscore.assay.eth reputation updated on ENS (Sepolia), live
-      score: 92 -> 41 (-51)
-      slashes: 0 -> 1
-      ens tx: sepolia:0xabc123...def456
+      tx: 0.0.9695801@1784984811.289048011
+[✔] Reputation reputation updated on ENS (Sepolia), confirmed after 28.6s
+      score: 88 -> 58
+      slashes: 1 -> 2
+      ens tx: 0xf0ba3572f5a7c105126129911772d7a0c3cb3d238be145e0964aeaa543b5c0e9
 ```
 
-`Register` stays `pending` because the slash fixture starts mid-loop (a
-provider already registered earlier); that is deliberate, not a bug: it shows
-what a step that never fires looks like on screen.
+`Register` stays `pending` because neither the fixture nor a real demo run
+ever calls `AssayNode.register()`: registration (the bond + the two ENS
+writes) is an operator action `packages/registry/scripts/reset-demo-state.ts`
+performs ahead of time, not a beat either the fixture or `apps/demo`'s own
+four keys narrate. That is deliberate, not a bug: it shows what a step that
+never fires looks like on screen.
+
+## Live wiring
+
+`apps/demo` composes the real adapters, `@assay/core`'s loop and this
+package: it wires each `AssayNode`'s `onLoopEvent` through
+`from-core.ts`'s `createCoreEventMapper()` and pushes the mapped events into
+this package's `render()` (via `apps/demo/src/screen.ts`, which also adds the
+demo's own key-legend/status footer underneath the frame). See
+`apps/demo/src/session.ts` and `apps/demo/src/main.ts` for exactly how, and
+`docs/demo-run-sheet.md` for the running order. This package itself still
+never imports a network client and never drives the loop — `from-core.ts` is
+the one file here that knows core's vocabulary exists, and even it only maps,
+it never calls anything.
 
 ## Not done here
 
-- No live wiring to `@assay/core`/apps/mcp/apps/watchdog: whichever of those
-  lands the real loop needs to emit `LoopEvent`s that shape as it runs. This
-  package only defines the shape and the renderer.
-  - What `@assay/core` now offers for exactly that (issue #53): `settle()`
-    runs the Hedera slash and the ENS reputation write concurrently and
-    reports both legs' progress through `AssayNodeConfig.onSettleProgress`
-    (`'slashing'`/`'writing-reputation'` fire together, then each leg's own
-    `-confirmed`/`-failed` tick fires the moment *that* leg lands, independent
-    of the other). Paired with `@assay/registry`'s own
-    `onReputationWriteAttempt` (submitted/pending-heartbeat/confirmed, bound
-    at `createEnsRegistry` construction), whoever wires the live loop has
-    everything needed to drive the `slash`/`reputation` steps below exactly
-    like `fixtures/slash.ts` already renders them: `slash` flips to `ok` early
-    while `reputation` keeps narrating heartbeats, then `reputation` lands.
-    Verified live against real Sepolia/Hedera testnet transactions while
-    building #53 (see that PR's `live_evidence`), by mapping those two hooks'
-    ticks onto this package's own `LoopEvent`/`attach()` with no changes
-    needed here — this package's renderer was already generic enough.
 - No color-scheme/theming beyond the four ANSI colors used; not needed for a
   36h build.

@@ -57,6 +57,44 @@ overruns.
 the honest-provider counter-example from the live run and describe it verbally instead,
 because it is the cheapest thing to lose and the recorded clip can carry it.
 
+## Driving it: `apps/demo`
+
+The loop above is now driven from one keyboard, one screen (issue #86), not by launching
+scripts in two terminals:
+
+```
+pnpm --filter @assay/demo exec tsx src/index.ts live        # real networks
+pnpm --filter @assay/demo exec tsx src/index.ts rehearsal   # no network, paced fixture replay
+```
+
+Four keys, pressed in order, nothing auto-advances: `[1] discover  [2] pay  [3] serve
+[4] challenge`. A step already running cannot be restarted by a stray keypress.
+
+**One honest divergence from the plan above, worth stating plainly rather than quietly
+matching the numbers to a different story.** The 42-57s "agent: discover, reason, pay,
+serve" figure is `apps/mcp`'s real headless Claude agent, reasoning live through the MCP
+`discover`/`pay_and_call` tools — that path is unchanged and still the one that proves
+"agentic is real reasoning, not a hardcoded `if`" (SPEC.md §16). `apps/demo`'s own `discover`/
+`pay`/`serve` keys do not spawn that agent (it is a separate live process this app does not
+compose); they apply the exact same structured material a real agent reads
+(`ProviderAssessment.signals`, rendered on the pay row before it pays) through the
+deterministic policy threshold `@assay/core` already ships as its non-agent fallback. That
+means this path's own discover+pay+serve is fast, a few seconds total (Hedera confirm is the
+only real wait), not 42-57s — there is no long reasoning step to hide behind the
+introduction here. Use `apps/mcp`'s `scripts/run-agent.ts` when the point being made is "the
+agent decided"; use `apps/demo` when the point is "watch the whole loop, including the
+challenge climax, live on one screen at your own pace."
+
+What `apps/demo` does keep exactly as measured: the verifier's verdict is still the reveal,
+landing under a second, before the slash; the slash still lands fast (real bond transfer);
+and the ENS reputation write is still the closing beat, narrated live with a real ~3-second
+heartbeat (`@assay/registry`'s `onReputationWriteAttempt`, wired through
+`apps/demo/src/reputation-heartbeat.ts`) rather than a frozen screen. Pressing `[4] challenge`
+re-bonds and serves the sacrificial provider first (silently — see `apps/demo/src/session.ts`),
+so that whole climax (re-bond, pay, serve, challenge, verify, slash, reputation) is one
+keypress, and it is the long one: comfortably inside the 19-43s range measured above, with
+the ENS write itself still the dominant cost.
+
 ## Before every run
 
 The reputation records are real and every rehearsal changes them, so reset first:
@@ -90,8 +128,12 @@ Checklist:
       `Not logged in`. Launch via `bash -lc`.
 - [ ] Hedera operator balance non-trivial (`reset` alone posts a 30 HBAR bond; the account
       refills daily)
-- [ ] one dry run of `pnpm --filter @assay/dashboard exec tsx src/index.ts slash 0`, which
-      needs no network and confirms the narration renders
+- [ ] one dry run of `pnpm --filter @assay/demo exec tsx src/index.ts rehearsal`, which needs
+      no network and confirms the narration renders at the same pace the live run will
+- [ ] `apps/demo`'s own live mode (`tsx src/index.ts live`) checks `rugscore.assay.eth`'s live
+      reputation before it ever shows the keyboard, and refuses to start with a clear message
+      if it would make the pay step decline — a live run failing that check is itself a sign
+      `reset-demo-state.ts` needs to be re-run
 
 ## Fallback
 
