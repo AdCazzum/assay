@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     console.log('verify_claim annotations:', verifyClaimTool.annotations);
     console.log('challenge annotations:', challengeTool.annotations);
 
-    section('list_providers (real ENS resolves of rugscore.assay.eth / liar.assay.eth)');
+    section('list_providers (real ENS resolves of rugscore.assay.eth / vantage.assay.eth)');
     const listProvidersResult = await live.client.callTool({ name: 'list_providers', arguments: {} });
     console.log(text(listProvidersResult));
 

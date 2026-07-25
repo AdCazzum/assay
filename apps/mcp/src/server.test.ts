@@ -404,7 +404,7 @@ describe('assay MCP server', () => {
     it('reports hits and misses without erroring on the miss', async () => {
       node.listProvidersResult = [
         { name: 'rugscore.assay.eth', outcome: 'ok', provider: FIXTURE_PROVIDER_RECORD, assessment: FIXTURE_ASSESSMENT },
-        { name: 'liar.assay.eth', outcome: 'miss', reason: 'resolver not configured for liar.assay.eth' },
+        { name: 'vantage.assay.eth', outcome: 'miss', reason: 'resolver not configured for vantage.assay.eth' },
       ];
       const { client } = await connect(node);
 
@@ -415,7 +415,7 @@ describe('assay MCP server', () => {
       expect(result.structuredContent).toEqual({ providers: node.listProvidersResult });
       const text = (result.content as Array<{ type: string; text: string }>)[0].text;
       expect(text).toContain('[OK] rugscore.assay.eth');
-      expect(text).toContain('[MISS] liar.assay.eth');
+      expect(text).toContain('[MISS] vantage.assay.eth');
       expect(text).toContain('resolver not configured');
     });
 

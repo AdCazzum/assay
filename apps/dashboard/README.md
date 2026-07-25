@@ -74,8 +74,8 @@ comment for when and how):
 ASSAY — reputation + payment rail
 
 [○] Register   (pending)
-[✔] Discover   resolved liar.assay.eth: 5 HBAR/call, score 88, 1 slashes
-      ens name: liar.assay.eth
+[✔] Discover   resolved vantage.assay.eth: 5 HBAR/call, score 88, 1 slashes
+      ens name: vantage.assay.eth
       price: 5 HBAR
       reputation: score 88, jobs 9, slashes 1
       bond: 30 HBAR

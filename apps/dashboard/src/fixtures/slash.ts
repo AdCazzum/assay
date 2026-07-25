@@ -1,6 +1,6 @@
 /**
  * The lying-provider climax: discover through the ENS reputation write,
- * against the sacrificial provider (`liar.assay.eth`) running
+ * against the sacrificial provider (`vantage.assay.eth`) running
  * `@assay/cap-rugscore`'s `createLyingRugScoreProvider` (SPEC.md §11: a
  * declared test harness, not a faked sponsor integration — the bond, the
  * payment, the verifier's re-derivation from The Graph, the slash and the
@@ -16,11 +16,11 @@ export const SLASH_EVENTS: readonly LoopEvent[] = [
   {
     "step": "discover",
     "status": "ok",
-    "summary": "resolved liar.assay.eth: 5 HBAR/call, score 88, 1 slashes",
+    "summary": "resolved vantage.assay.eth: 5 HBAR/call, score 88, 1 slashes",
     "artifacts": [
       {
         "label": "ens name",
-        "value": "liar.assay.eth"
+        "value": "vantage.assay.eth"
       },
       {
         "label": "price",
@@ -39,7 +39,7 @@ export const SLASH_EVENTS: readonly LoopEvent[] = [
   {
     "step": "pay",
     "status": "running",
-    "summary": "assessed \"liar.assay.eth\": 5 HBAR, score 88 — 1 of 9 job(s) were slashed (11.1% slash ratio). The slash ratio matters more than the raw score. — paying..."
+    "summary": "assessed \"vantage.assay.eth\": 5 HBAR, score 88 — 1 of 9 job(s) were slashed (11.1% slash ratio). The slash ratio matters more than the raw score. — paying..."
   },
   {
     "step": "pay",

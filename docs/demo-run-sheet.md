@@ -87,13 +87,13 @@ relying on the total.
 The agent, entirely on its own:
 
 1. Called `list_providers` and read both `rugscore.assay.eth` (score 78, 14 jobs, 0 slashes) and
-   `liar.assay.eth` (score 88, 9 jobs, 1 slash, 11.1% slash ratio) before touching either.
+   `vantage.assay.eth` (score 88, 9 jobs, 1 slash, 11.1% slash ratio) before touching either.
 2. Discovered, assessed, and paid **both** — reasoning explicitly that the higher headline score
    (88) was not automatically the safer bet given the slash on record, and that a second,
    independent read was worth the budget for a decision this size.
 3. Verified **all five claims on both jobs**, not just the one that looked suspicious per the
    prompt's own instruction — ten `verify_claim` calls total.
-4. On `liar.assay.eth`'s job, `liquidityUsd` came back **FALSE**: claimed `1,000,056.51` at
+4. On `vantage.assay.eth`'s job, `liquidityUsd` came back **FALSE**: claimed `1,000,056.51` at
    block 25610881, The Graph reporting `56.51334895971466` at that same block (the declared
    `createLyingRugScoreProvider` harness's default tamper: `+max(|honest|*10, 1_000_000)`). Every
    other claim on that same job verified true.
@@ -116,7 +116,7 @@ Phase timing (from the capture's own `recordedAtMs`, relative to run start):
 | 26.8 – 28.8s | 2.0s | five `verify_claim` calls against the honest job, all true |
 | 28.8 – 41.9s | 13.1s | reasoning toward `rate` |
 | 41.9 – 50.3s | 8.4s | `rate`: real ENS reputation write, 8.5s, heartbeat every ~3s |
-| 50.3 – 55.1s | 4.8s | pay `liar.assay.eth`: real payment, confirm in 4.2s |
+| 50.3 – 55.1s | 4.8s | pay `vantage.assay.eth`: real payment, confirm in 4.2s |
 | 55.1 – 61.5s | 6.4s | serve + accept (block 25610881) |
 | 61.5 – 63.6s | 2.1s | five `verify_claim` calls; `liquidityUsd` FALSE, four others true |
 | 63.6 – 74.1s | 10.5s | reasoning toward the decision to challenge |
@@ -128,7 +128,7 @@ Phase timing (from the capture's own `recordedAtMs`, relative to run start):
 **slash transfer itself failed** with `unknown bondRef`. `packages/payments/src/payments.ts`'s
 own doc comment says why: its bond ledger is a small in-memory `Map`, "not durable and does not
 survive a process restart" (SPEC.md §17's declared scope cut). `reset-demo-state.ts` posts
-`liar.assay.eth`'s bond in its *own* process, which exits before the agent ever runs; the live
+`vantage.assay.eth`'s bond in its *own* process, which exits before the agent ever runs; the live
 MCP server the agent actually drives is a *third*, separate process, whose own payments port
 never saw that `bondRef`. The old keypress runner never hit this because its `doChallenge`
 re-bonded the sacrificial provider inside the *same* process immediately before challenging —
@@ -138,7 +138,7 @@ scope for #93/#94.
 
 **What still landed for real despite that**: `settle()` runs the slash and the ENS reputation
 write concurrently and neither depends on the other's outcome (#53) — so even though the slash
-failed, the reputation write still landed for real: `liar.assay.eth`'s ENS reputation dropped
+failed, the reputation write still landed for real: `vantage.assay.eth`'s ENS reputation dropped
 **score 88 → 58, jobs 9 → 10, slashes 1 → 2** (`SETTLEMENT_SCORE_PENALTY` is -30), real tx
 `0xd9b46daf...`. The job itself is durably `challenged` with `verdict.valid: false` on record.
 The one thing that did not move was the actual HBAR transfer to the challenger — the bond
@@ -165,7 +165,7 @@ Takes ~35-60s (two providers, two real bonds, four ENS writes) and must end with
 | | reset to | why |
 |---|---|---|
 | `rugscore.assay.eth` | score 78, 14 jobs, 0 slashes, bond 6x price, `capabilityId: "rugscore"` | without it the agent correctly declines to pay and the run never gets past discover |
-| `liar.assay.eth` | score 88, 9 jobs, 1 slash, bond 6x price, `capabilityId: "rugscore-liar"` | without the capability-id fix there is no live lie behind this name at all; without the reputation reset the score sits too low to visibly collapse again |
+| `vantage.assay.eth` | score 88, 9 jobs, 1 slash, bond 6x price, `capabilityId: "rugscore.v2"` | without the capability-id fix there is no live lie behind this name at all; without the reputation reset the score sits too low to visibly collapse again |
 
 The deleted runner used to check `rugscore.assay.eth`'s live reputation before spawning the
 agent and refuse

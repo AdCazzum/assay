@@ -166,7 +166,7 @@ export function buildLiveWatchdogNode(capabilityMode: CapabilityMode): LiveWatch
   const node = createAssayNode(config);
 
   // Sacrificial by default (see `LiveWatchdogNode.providerName`'s doc
-  // comment above): "liar" both names what this app demos against
+  // comment above): "vantage" both names what this app demos against
   // (the declared lying-provider harness, SPEC.md §11) and keeps it
   // visibly distinct from the good provider a human skimming .env would
   // otherwise conflate the two names for.

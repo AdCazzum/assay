@@ -142,7 +142,7 @@ rigged: a verifier that always returns FALSE proves nothing about verification. 
 path, outcome decided by the verifier.
 
 19 to 43s each (the spread is the point, not the median: see `docs/demo-run-sheet.md`). They
-target `liar.assay.eth`, not the good provider, so rehearsing the climax does not damage the
+target `vantage.assay.eth`, not the good provider, so rehearsing the climax does not damage the
 record the demo's opening depends on. Override with `WATCHDOG_PROVIDER_NAME` if you need to.
 
 ## Level 6 — the real requester agent
