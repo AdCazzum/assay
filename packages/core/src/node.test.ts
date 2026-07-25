@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   createAssayNode,
@@ -27,6 +28,17 @@ import type { Capability, Manifest, ProviderRecord, Reputation, Verdict } from '
 
 const PROVIDER_NAME = 'rugscore.assay.eth';
 const CHALLENGER_ACCOUNT_ID = '0.0.999999';
+
+/**
+ * Mirrors node.ts's private `hashRequest` exactly, so tests that call
+ * `payments.pay()` and `node.serve()` directly (rather than through
+ * `payAndCall`, which computes this itself) can hand `confirmPayment` a memo
+ * that actually matches the request — otherwise `FakePaymentsPort`'s default
+ * memo check (hedera-F1) would reject them for the wrong reason.
+ */
+function hashRequestForTest(capabilityId: string, request: unknown): string {
+  return createHash('sha256').update(JSON.stringify({ capabilityId, request })).digest('hex');
+}
 
 const manifest: Manifest = {
   capabilityId: 'echo',
@@ -158,14 +170,15 @@ describe('createAssayNode', () => {
     );
 
     expect(node.jobs.list()).toEqual([]);
-    // the gate actually consulted confirm(), it didn't just skip payment
-    expect(payments.confirmCalls).toHaveLength(1);
+    // the gate actually consulted the port, it didn't just skip payment (the
+    // default fake supports confirmPayment, so that's the branch serve() takes)
+    expect(payments.confirmPaymentCalls).toHaveLength(1);
     expect(payments.payCalls).toHaveLength(1);
   });
 
   it('the payment gate: a failed (never-confirming) payment never produces a served result even called directly through serve()', async () => {
     const { node, payments } = buildNode({ confirmedTxIds: [] });
-    const { txId } = await payments.pay(5, 'some-request-hash');
+    const { txId } = await payments.pay(5, hashRequestForTest('echo', 'hello'));
 
     await expect(
       node.serve({ provider: PROVIDER_NAME, capabilityId: 'echo', request: 'hello', txId }),
@@ -176,7 +189,7 @@ describe('createAssayNode', () => {
 
   it('serves once the payment genuinely confirms, not merely because pay() was called', async () => {
     const { node, payments } = buildNode({ confirmedTxIds: [] });
-    const { txId } = await payments.pay(5, 'some-request-hash');
+    const { txId } = await payments.pay(5, hashRequestForTest('echo', 'hello'));
 
     await expect(
       node.serve({ provider: PROVIDER_NAME, capabilityId: 'echo', request: 'hello', txId }),
@@ -192,6 +205,68 @@ describe('createAssayNode', () => {
 
     expect(job.status).toBe('served');
     expect(node.jobs.list()).toHaveLength(1);
+  });
+
+  it('the payment gate now also checks amount, recipient binding, and memo, not just SUCCESS (hedera-F1): a confirmed transaction for the wrong amount is refused', async () => {
+    const { node, payments } = buildNode();
+    const { txId } = await payments.pay(1, hashRequestForTest('echo', 'hello')); // manifest.priceHbar is 5
+
+    await expect(
+      node.serve({ provider: PROVIDER_NAME, capabilityId: 'echo', request: 'hello', txId }),
+    ).rejects.toThrow(PaymentNotConfirmedError);
+    expect(node.jobs.list()).toEqual([]);
+  });
+
+  it('the payment gate refuses a confirmed transaction whose memo does not match this capabilityId/request (the requestHash-in-memo binding, made real)', async () => {
+    const { node, payments } = buildNode();
+    const { txId } = await payments.pay(5, 'memo-for-a-different-request');
+
+    await expect(
+      node.serve({ provider: PROVIDER_NAME, capabilityId: 'echo', request: 'hello', txId }),
+    ).rejects.toThrow(PaymentNotConfirmedError);
+    expect(node.jobs.list()).toEqual([]);
+  });
+
+  it('the payment gate refuses replaying an already-consumed txId against a *different* request (memo mismatch catches it)', async () => {
+    const { node, payments } = buildNode();
+
+    const { job: firstJob } = await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+    expect(firstJob.status).toBe('served');
+
+    // Same txId, a different request this payment never actually paid for:
+    // the memo bound to the original request does not match this one.
+    await expect(
+      node.serve({ provider: PROVIDER_NAME, capabilityId: 'echo', request: 'goodbye', txId: firstJob.paymentTx }),
+    ).rejects.toThrow(PaymentNotConfirmedError);
+    expect(node.jobs.list()).toHaveLength(1);
+  });
+
+  it('the job store refuses replaying an already-consumed txId against the *same* request too (the memo would match, so the store itself must dedupe)', async () => {
+    const { node } = buildNode();
+
+    const { job: firstJob } = await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+    expect(firstJob.status).toBe('served');
+
+    // Identical provider/capabilityId/request/txId: confirmPayment's amount
+    // and memo checks would both pass again, so it is the job store's own
+    // paymentTx dedupe (not the confirmation gate) that must refuse this.
+    await expect(
+      node.serve({ provider: PROVIDER_NAME, capabilityId: 'echo', request: 'hello', txId: firstJob.paymentTx }),
+    ).rejects.toThrow(/already funded job/);
+    expect(node.jobs.list()).toHaveLength(1);
+  });
+
+  it('a PaymentsPort without confirmPayment (not yet upgraded) still gates on the older, bare confirm() rather than serving unconditionally', async () => {
+    const { node, payments } = buildNode({ confirmedTxIds: [], supportConfirmPayment: false });
+    const { txId } = await payments.pay(5, 'irrelevant-memo-this-port-cannot-check');
+
+    await expect(
+      node.serve({ provider: PROVIDER_NAME, capabilityId: 'echo', request: 'hello', txId }),
+    ).rejects.toThrow(PaymentNotConfirmedError);
+
+    payments.setConfirmed(txId);
+    const job = await node.serve({ provider: PROVIDER_NAME, capabilityId: 'echo', request: 'hello', txId });
+    expect(job.status).toBe('served');
   });
 
   it('discover surfaces manifest and reputation so a requester can decide whether to pay', async () => {

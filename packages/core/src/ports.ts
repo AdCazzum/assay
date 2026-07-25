@@ -19,12 +19,56 @@ export interface RegistryPort {
   ): Promise<{ txHash: string; reputation: Reputation }>;
 }
 
+/** What `confirmPayment` reports once the underlying transaction is final. */
+export type PaymentConfirmation = {
+  confirmed: boolean;
+  /**
+   * Present only when `confirmed` is `false`, naming which check failed:
+   * `'unsuccessful'` the mirror node reported a final result other than
+   * SUCCESS (a still-pending transaction is not represented here at all —
+   * see below); `'amount-too-low'` the recipient received less than
+   * `expectedAmountHbar`; `'memo-mismatch'` the transaction's memo did not
+   * equal `expectedMemo`. Informational only (see `serve()` in
+   * `@assay/core`'s `node.ts`, which treats every reason the same way:
+   * refuse to serve).
+   *
+   * A transaction the mirror node never surfaces within the poll timeout is
+   * not a `PaymentConfirmation` at all: implementations built on
+   * `pollMirrorNodeTransaction` (see `@assay/payments`) reject the returned
+   * promise with `MirrorNodeTimeoutError` in that case, same as `confirm()`
+   * always has, rather than resolving `{ confirmed: false }`.
+   */
+  reason?: 'unsuccessful' | 'amount-too-low' | 'memo-mismatch';
+};
+
 /** Hedera testnet: pay per call, provider bond, slash. */
 export interface PaymentsPort {
   /** Pays `amountHbar`, binding `requestHash` to the transaction. */
   pay(amountHbar: number, requestHash: string): Promise<{ txId: string }>;
   /** Polls the mirror node until the transaction is final. */
   confirm(txId: string): Promise<boolean>;
+  /**
+   * Like `confirm`, but also verifies the transaction actually paid at least
+   * `expectedAmountHbar` to this port's own configured recipient, carrying
+   * `expectedMemo` as its memo — the amount/recipient/memo check that bare
+   * `confirm()` cannot do, because `confirm()`'s signature has no room to
+   * return them (see hedera-F1: before this method existed, any transaction
+   * id that merely resolved to SUCCESS on the mirror node — regardless of
+   * amount, recipient, or memo, and even a txId already spent on a prior job
+   * — unlocked `serve()`).
+   *
+   * Optional so a `PaymentsPort` implementation that cannot yet source these
+   * fields, or a test double that does not need to, still satisfies this
+   * interface: `serve()` falls back to plain `confirm()` when a port does not
+   * implement this, which is exactly the pre-existing (weaker) gate. Every
+   * real adapter should implement it; `createHederaPaymentsPort` (see
+   * `@assay/payments`) does.
+   */
+  confirmPayment?(input: {
+    txId: string;
+    expectedAmountHbar: number;
+    expectedMemo: string;
+  }): Promise<PaymentConfirmation>;
   postBond(amountHbar: number): Promise<{ bondRef: string; txId: string }>;
   slash(bondRef: string, toChallenger: string): Promise<{ txId: string }>;
 }
