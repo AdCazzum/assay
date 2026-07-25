@@ -164,6 +164,12 @@ order of magnitude as `pay`'s fee.
 dominated by the same ~3s consensus + mirror-node ingestion lag, not by which
 `PaymentsPort` method issued it.
 
+**Superseded: a second funded account now exists** (`0.0.9743633`, created with
+`scripts/create-account.ts`), so payments, bonds and slashes are real transfers between
+distinct accounts. The note below describes how it used to be, and why it mattered: the
+mirror node reports a self-transfer as only the fee movement, so `confirmPayment`'s amount
+check can never pass on one. That was found by running the live loop, not by a test.
+
 **Only a self-transfer was exercised** (there is no second funded testnet
 account): both `postBond` and `slash` sent `0.0.9695801 -> 0.0.9695801`. The
 mirror node's transfer list for each transaction shows only the network fee

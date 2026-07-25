@@ -649,7 +649,7 @@ export interface AssayNode {
  * dependency-free: `node:crypto` is a Node builtin, not a new package
  * dependency.
  */
-function hashRequest(capabilityId: string, request: unknown): string {
+export function hashRequest(capabilityId: string, request: unknown): string {
   return createHash('sha256').update(JSON.stringify({ capabilityId, request })).digest('hex');
 }
 
