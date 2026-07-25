@@ -21,12 +21,13 @@
  *
  * `challenge` now that #26/#27 landed in core: it calls `AssayNode.challenge`
  * (verdict) then `AssayNode.settle` (slash-or-reputation-rise) and returns the
- * final job, `NodePort`'s documented contract. Against the real adapters this
- * can still fail honestly: `@assay/registry`'s live ENS adapter's
- * `updateReputation` is `#16`'s own not-yet-built piece, so a real challenge
- * against it surfaces core's `ReputationUpdateFailedError` (wrapping the #16
- * stub's error) rather than silently succeeding — same "fail with a clear,
- * named message" posture `rate` below already has for the same reason.
+ * final job, `NodePort`'s documented contract. `@assay/registry`'s live ENS
+ * adapter's `updateReputation` (#16) is implemented and wired in for real
+ * (see `ens-registry.ts`), so a real challenge against it writes the
+ * reputation change to Sepolia; if that write itself fails (RPC error,
+ * out-of-range value, etc.) it still surfaces core's
+ * `ReputationUpdateFailedError` rather than silently succeeding, same "fail
+ * with a clear, named message" posture `rate` below has for the same reason.
  *
  * `rate` (issue #46's second open question) is implemented as far as the
  * existing core API allows — see its doc comment below for exactly what core
@@ -159,11 +160,11 @@ export function createLiveAssayNode(config: LiveAssayNodeConfig): AssayNodePort 
      *    now regardless of whether the reputation write below succeeds.
      *  - It then calls `registry.updateReputation(...)`, the real
      *    `RegistryPort` method this is supposed to drive. Against
-     *    `@assay/registry`'s live ENS adapter that call throws today
-     *    ("updateReputation is tracked in #16") — this file does not paper
-     *    over that; it is the same "fail with a clear, named message until
-     *    the tracked issue lands" posture `challenge` has for its own #16
-     *    dependency.
+     *    `@assay/registry`'s live ENS adapter (#16, implemented) that writes
+     *    the reputation change to Sepolia for real; if the write itself fails
+     *    (RPC error, out-of-range value, etc.) this file does not paper over
+     *    that, it surfaces the underlying error, same "fail with a clear,
+     *    named message on a real failure" posture `challenge` has.
      */
     async rate(jobId, satisfied, _comment) {
       const job = node.jobs.get(jobId);
