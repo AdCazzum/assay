@@ -56,6 +56,54 @@ export function createHederaPaymentsPort(config: HederaPaymentsPortConfig): Paym
   const bonds = new Map<string, BondEntry>();
   let bondSeq = 0;
 
+  /**
+   * Recovers a bond's amount from the transaction its `bondRef` names.
+   *
+   * `bondRef` is `bond-<seq>-<txId>`, so the transaction id is everything
+   * after the second dash. The amount is what actually arrived at the bond
+   * account in that transaction, read off the mirror node.
+   */
+  async function resolveBondAmountFromChain(bondRef: string): Promise<number> {
+    const txId = bondRef.replace(/^bond-\d+-/, '');
+    if (txId === bondRef) {
+      throw new Error(
+        `slash: unknown bondRef "${bondRef}", and it does not carry a transaction id to recover the amount from.`,
+      );
+    }
+
+    let detail;
+    try {
+      detail = await pollMirrorNodeTransaction(txId, {
+        baseUrl: config.mirrorNodeBaseUrl,
+        fetchImpl: config.fetchImpl,
+        timeoutMs: config.confirmTimeoutMs,
+        intervalMs: config.confirmIntervalMs,
+      });
+    } catch (err) {
+      throw new Error(
+        `slash: bondRef "${bondRef}" is not in this process's ledger and its transaction could not be read ` +
+          `from the mirror node (${err instanceof Error ? err.message : String(err)}). Refusing to slash an amount it cannot verify.`,
+      );
+    }
+
+    if (detail.state !== 'success') {
+      throw new Error(`slash: the transaction behind bondRef "${bondRef}" is ${detail.state}, not a settled bond.`);
+    }
+
+    const receivedTinybars = detail.transfers
+      .filter((t) => t.accountId === config.bondAccountId)
+      .reduce((sum, t) => sum + t.amountTinybars, 0);
+
+    if (receivedTinybars <= 0) {
+      throw new Error(
+        `slash: the transaction behind bondRef "${bondRef}" moved nothing to the bond account ${config.bondAccountId}, ` +
+          'so there is no bond to slash. A self-transfer nets to zero here and cannot back a bond.',
+      );
+    }
+
+    return receivedTinybars / TINYBARS_PER_HBAR;
+  }
+
   return {
     async pay(amountHbar, requestHash) {
       return config.client.transferHbar({
@@ -120,9 +168,21 @@ export function createHederaPaymentsPort(config: HederaPaymentsPortConfig): Paym
     },
 
     async slash(bondRef, toChallenger) {
-      const bond = bonds.get(bondRef);
+      let bond = bonds.get(bondRef);
       if (!bond) {
-        throw new Error(`slash: unknown bondRef "${bondRef}"`);
+        // The ledger is per-process, and a bond is routinely posted by one
+        // process and slashed by another: the reset script posts it, the MCP
+        // server slashes it when an agent challenges. That is not an edge
+        // case, it is the demo's own shape, and it used to fail here with
+        // "unknown bondRef" at the exact moment the climax lands.
+        //
+        // The bondRef carries the transaction that funded it, so the amount is
+        // recoverable from the chain. Reading it back is also strictly better
+        // than trusting the local number was: it verifies what was actually
+        // bonded rather than what this process believes it bonded.
+        const amountHbar = await resolveBondAmountFromChain(bondRef);
+        bond = { amountHbar, slashed: false };
+        bonds.set(bondRef, bond);
       }
       if (bond.slashed) {
         throw new Error(`slash: bondRef "${bondRef}" was already slashed`);

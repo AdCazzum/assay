@@ -237,3 +237,64 @@ describe('createHederaPaymentsPort: onConfirmAttempt observability', () => {
     expect(onConfirmAttempt).toHaveBeenCalledWith(expect.objectContaining({ state: 'success' }));
   });
 });
+
+describe('slash across processes', () => {
+  // The bond is routinely posted by one process (the reset script) and slashed
+  // by another (the MCP server, when an agent challenges). That is the demo's
+  // own shape, and it used to fail with "unknown bondRef" at the exact moment
+  // the climax lands.
+  const bondTxId = '0.0.9695801@1784995679.878086253';
+  const bondRef = `bond-1-${bondTxId}`;
+
+  function portWithChainBond(transfers: Array<{ account: string; amount: number }>) {
+    const client = new FakeHederaTransferClient();
+    const fetchImpl = (async () => ({
+      status: 200,
+      json: async () => ({
+        transactions: [
+          { result: 'SUCCESS', memo_base64: '', transfers: transfers.map((t) => ({ account: t.account, amount: t.amount })) },
+        ],
+      }),
+    })) as never;
+    return {
+      client,
+      port: createHederaPaymentsPort({
+        client,
+        payToAccountId: '0.0.2',
+        bondAccountId: '0.0.3',
+        mirrorNodeBaseUrl: 'https://mirror.test',
+        fetchImpl,
+      }),
+    };
+  }
+
+  it('recovers the bond amount from the chain when this process never minted it', async () => {
+    const { client, port } = portWithChainBond([
+      { account: '0.0.3', amount: 30 * 100_000_000 },
+      { account: '0.0.1', amount: -30 * 100_000_000 },
+    ]);
+
+    await port.slash(bondRef, '0.0.9');
+
+    // Slashed the amount the chain says was bonded, not one this process guessed.
+    expect(client.calls.at(-1)).toMatchObject({ toAccountId: '0.0.9', amountHbar: 30 });
+  });
+
+  it('refuses when the named transaction moved nothing to the bond account', async () => {
+    // A self-transfer nets to zero in the mirror node's transfer list, so it
+    // cannot back a bond. Better to refuse than to slash an invented amount.
+    const { port } = portWithChainBond([{ account: '0.0.1', amount: -143077 }]);
+    await expect(port.slash(bondRef, '0.0.9')).rejects.toThrow(/moved nothing to the bond account/);
+  });
+
+  it('refuses a bondRef that carries no transaction id to recover from', async () => {
+    const { port } = portWithChainBond([{ account: '0.0.3', amount: 100_000_000 }]);
+    await expect(port.slash('not-a-bond-ref', '0.0.9')).rejects.toThrow(/does not carry a transaction id/);
+  });
+
+  it('still rejects a double slash once recovered', async () => {
+    const { port } = portWithChainBond([{ account: '0.0.3', amount: 100_000_000 }]);
+    await port.slash(bondRef, '0.0.9');
+    await expect(port.slash(bondRef, '0.0.9')).rejects.toThrow(/already slashed/);
+  });
+});
