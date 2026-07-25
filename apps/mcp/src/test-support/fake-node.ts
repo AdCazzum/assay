@@ -1,5 +1,18 @@
-import { assessProvider, type Job, type Manifest, type ProviderRecord, type Reputation } from '@assay/core';
-import type { AssayNodePort, DiscoverResult } from '../node-port.js';
+import {
+  assessProvider,
+  type Job,
+  type Manifest,
+  type ProviderRecord,
+  type RegisterProgress,
+  type Reputation,
+} from '@assay/core';
+import type {
+  AssayNodePort,
+  DiscoverResult,
+  ProviderListItem,
+  RegisterProviderResult,
+  VerifyClaimResult,
+} from '../node-port.js';
 
 /**
  * Test double for `AssayNodePort`. This is NOT `@assay/core`'s
@@ -14,9 +27,20 @@ export class FakeAssayNode implements AssayNodePort {
   readonly payAndCallCalls: Array<{ capabilityId: string; request: unknown; force?: boolean }> = [];
   readonly challengeCalls: Array<{ jobId: string; claimKey: string }> = [];
   readonly rateCalls: Array<{ jobId: string; satisfied: boolean; comment?: string }> = [];
+  readonly verifyClaimCalls: Array<{ jobId: string; claimKey: string }> = [];
+  readonly registerProviderCalls: Array<{
+    label: string;
+    manifest: Omit<Manifest, 'bondRef'>;
+    bondHbar: number;
+  }> = [];
+  listProvidersCalls = 0;
+  readonly getJobCalls: string[] = [];
+  listJobsCalls = 0;
 
   providerByCapability = new Map<string, ProviderRecord>();
   jobsById = new Map<string, Job>();
+  /** Backing fixture for `listJobs`, separate from `jobsById` (whose keys are sometimes `capabilityId:request`, not always a bare jobId — see `payAndCall` below). */
+  jobsList: Job[] = [];
 
   /** If set, `discover` throws this instead of looking up `providerByCapability`. */
   discoverError?: Error;
@@ -26,6 +50,20 @@ export class FakeAssayNode implements AssayNodePort {
   challengeError?: Error;
   /** If set, `rate` throws this instead of returning a job. */
   rateError?: Error;
+  /** If set, `verifyClaim` throws this instead of returning a fixture result. */
+  verifyClaimError?: Error;
+  /** Keyed `${jobId}:${claimKey}`; what `verifyClaim` returns absent `verifyClaimError`. */
+  verifyClaimResults = new Map<string, VerifyClaimResult>();
+  /** If set, `registerProvider` throws this instead of returning `registerProviderResult`. */
+  registerProviderError?: Error;
+  registerProviderResult?: RegisterProviderResult;
+  /** `registerProvider` invokes its `onProgress` callback once per tick here, in order, before resolving/rejecting. */
+  registerProviderProgressTicks: RegisterProgress[] = [];
+  /** If set, `listProviders` throws this instead of returning `listProvidersResult`. */
+  listProvidersError?: Error;
+  listProvidersResult: ProviderListItem[] = [];
+  /** If set, `getJob` throws this instead of looking up `jobsById`. */
+  getJobError?: Error;
 
   async discover(capabilityId: string): Promise<DiscoverResult> {
     this.discoverCalls.push(capabilityId);
@@ -63,6 +101,50 @@ export class FakeAssayNode implements AssayNodePort {
     const job = this.jobsById.get(jobId);
     if (!job) throw new Error(`FakeAssayNode: no job fixture registered for "${jobId}"`);
     return job;
+  }
+
+  async verifyClaim(jobId: string, claimKey: string): Promise<VerifyClaimResult> {
+    this.verifyClaimCalls.push({ jobId, claimKey });
+    if (this.verifyClaimError) throw this.verifyClaimError;
+    const result = this.verifyClaimResults.get(`${jobId}:${claimKey}`);
+    if (!result) {
+      throw new Error(`FakeAssayNode: no verifyClaim fixture registered for "${jobId}:${claimKey}"`);
+    }
+    return result;
+  }
+
+  async registerProvider(
+    label: string,
+    manifest: Omit<Manifest, 'bondRef'>,
+    bondHbar: number,
+    onProgress?: (progress: RegisterProgress) => void,
+  ): Promise<RegisterProviderResult> {
+    this.registerProviderCalls.push({ label, manifest, bondHbar });
+    for (const tick of this.registerProviderProgressTicks) onProgress?.(tick);
+    if (this.registerProviderError) throw this.registerProviderError;
+    if (!this.registerProviderResult) {
+      throw new Error('FakeAssayNode: no registerProviderResult fixture registered');
+    }
+    return this.registerProviderResult;
+  }
+
+  async listProviders(): Promise<ProviderListItem[]> {
+    this.listProvidersCalls += 1;
+    if (this.listProvidersError) throw this.listProvidersError;
+    return this.listProvidersResult;
+  }
+
+  async getJob(jobId: string): Promise<Job> {
+    this.getJobCalls.push(jobId);
+    if (this.getJobError) throw this.getJobError;
+    const job = this.jobsById.get(jobId);
+    if (!job) throw new Error(`FakeAssayNode: no job fixture registered for "${jobId}"`);
+    return job;
+  }
+
+  async listJobs(): Promise<Job[]> {
+    this.listJobsCalls += 1;
+    return this.jobsList;
   }
 }
 

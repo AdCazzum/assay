@@ -33,19 +33,116 @@
  * `rate` (issue #46's second open question) is implemented as far as the
  * existing core API allows — see its doc comment below for exactly what core
  * still owes it.
+ *
+ * Issue #84 adds `verifyClaim`, `registerProvider`, `listProviders`, `getJob`
+ * and `listJobs`, all wired against real `@assay/core` behaviour (never
+ * reimplemented): `verifyClaim` and `getJob`/`listJobs` are thin pass
+ * throughs to `AssayNode.verifyClaim` and `AssayNode.jobs`; `registerProvider`
+ * calls `AssayNode.register()` after turning a bare label into a full ENS
+ * name; `listProviders` resolves a configured candidate list through the
+ * same `discover` path above, one candidate's failure never sinking the rest.
+ * The same #83 design-review finding this file's `discover` doc comment
+ * above already fixed (calling `registry.resolveProvider` directly instead
+ * of routing through the node, emitting no LoopEvent) is what every one of
+ * these new methods is written to avoid from the start.
+ *
+ * `payAndCall`'s `force: true` path gets the same kind of fix (same review,
+ * same root cause): it calls `payments.pay()` directly against the raw port
+ * (see this method's own doc comment for why), so without this it would
+ * never emit the `{step:'pay', phase:'paid'}` LoopEvent -- real HBAR moving
+ * with nothing narrating it. `serve()` right after is not bypassed, so its
+ * own confirming/confirmed/serve/accept events are unaffected either way.
+ *
+ * `rate` also gets a fix here (same review, same root cause): it lives
+ * outside `AssayNode` entirely (see its own doc comment for why -- core has
+ * no `rate` verb), so it could never emit a `LoopEvent` and was invisible to
+ * the live dashboard no matter what. It now synthesizes one, reusing the
+ * existing `SettlementLoopEvent`/`SettleProgress` shape rather than inventing
+ * a new one: `rate`'s reputation write is, in narration terms, exactly
+ * `settle()`'s valid-verdict "reputation" leg (writing-reputation ->
+ * reputation-confirmed/-failed -> done), so a dashboard that already renders
+ * that step renders this correctly with no changes of its own. This needs no
+ * change to `@assay/core` -- `createEventStamper()` is shared with the node
+ * below (passed in as `eventStamper`) so `rate`'s synthetic events interleave
+ * with the node's own real ones under one strictly increasing `seq`, per
+ * `createEventStamper`'s own doc comment on exactly this composition-root
+ * case.
  */
 
 import {
   assessProvider,
   createAssayNode,
+  createEventStamper,
   type AssayNodeConfig,
   type Job,
+  type LoopEvent,
+  type LoopEventVariant,
   type ProviderRecord,
+  type RegisterProgress,
   hashRequest,
 } from '@assay/core';
-import type { AssayNodePort, DiscoverResult } from './node-port.js';
+import type {
+  AssayNodePort,
+  ProviderListItem,
+  RegisterProviderResult,
+  VerifyClaimResult,
+} from './node-port.js';
 
-export type LiveAssayNodeConfig = AssayNodeConfig;
+export type LiveAssayNodeConfig = AssayNodeConfig & {
+  /**
+   * The Assay parent ENS name (e.g. `"assay.eth"`) subnames register under
+   * (issue #84). Only `registerProvider` needs this: it turns a bare label
+   * into the full name `"<label>.<ensParentName>"`. Every other
+   * `AssayNodePort` method works fine without it. Optional so existing
+   * callers/tests that never call `registerProvider` need not supply it;
+   * `registerProvider` throws `MissingEnsParentNameError` if it is absent
+   * when actually called.
+   */
+  ensParentName?: string;
+  /**
+   * The candidate provider names `listProviders` resolves (issue #84). ENS
+   * cannot be enumerated, so this is the one place "discovery" gets a real
+   * set to compare rather than a single hardcoded name. Defaults to an empty
+   * list (so `listProviders()` resolves to `[]`) when not provided.
+   */
+  candidateProviderNames?: string[];
+};
+
+/**
+ * Thrown by `registerProvider` when this node was not configured with
+ * `ensParentName` (issue #84): without it there is no parent name to build
+ * the full ENS subname from, and posting a real bond against a name we could
+ * not construct would be worse than refusing up front.
+ */
+export class MissingEnsParentNameError extends Error {
+  constructor() {
+    super(
+      'registerProvider requires "ensParentName" to be configured on this node (the Assay ' +
+        'parent ENS name subnames register under, e.g. "assay.eth"). Pass it in LiveAssayNodeConfig.',
+    );
+    this.name = 'MissingEnsParentNameError';
+  }
+}
+
+/**
+ * Thrown by `registerProvider` when `label` is not a bare subname label
+ * (issue #84): it must not itself contain a dot, since the full ENS name is
+ * built automatically as `"<label>.<ensParentName>"` -- a label that already
+ * looks like a full name is almost certainly a caller mistake, not something
+ * to silently double up on.
+ */
+export class InvalidProviderLabelError extends Error {
+  readonly label: string;
+
+  constructor(label: string) {
+    super(
+      `"${label}" is not a valid subname label: it must not contain "." -- pass just the label ` +
+        '(e.g. "myagent"), not a full ENS name; the full name is built automatically.',
+    );
+    this.name = 'InvalidProviderLabelError';
+    this.label = label;
+  }
+}
 
 /**
  * Thrown by `rate` when the job is not in a state `rate` applies to (SPEC.md
@@ -76,17 +173,57 @@ export class RateNotApplicableError extends Error {
  * environment).
  */
 export function createLiveAssayNode(config: LiveAssayNodeConfig): AssayNodePort {
-  const node = createAssayNode(config);
+  // Relays registerProvider's per-call onProgress callback (issue #84)
+  // through the one onRegisterProgress hook createAssayNode's config takes
+  // at construction time. `activeRegisterListener` is set right before
+  // register() is invoked and cleared in a `finally` right after (see
+  // registerProvider below): safe under this build's single-caller-at-a-time
+  // usage, same disclosed simplification the rest of this file already makes
+  // for the single-operator Hedera account.
+  let activeRegisterListener: ((progress: RegisterProgress) => void) | undefined;
+
+  // Shared across the node's own emitted events and rate()'s synthetic ones
+  // (see the module doc comment): one `createEventStamper()`, passed into
+  // `createAssayNode` as `eventStamper` and reused directly below, so `seq`
+  // stays strictly increasing across both sources.
+  const stamp = config.eventStamper ?? createEventStamper();
+
+  const node = createAssayNode({
+    ...config,
+    eventStamper: stamp,
+    onRegisterProgress(progress) {
+      config.onRegisterProgress?.(progress);
+      activeRegisterListener?.(progress);
+    },
+  });
   const { registry, payments } = config;
 
-  async function resolveAndAssess(name: string): Promise<DiscoverResult> {
-    const provider: ProviderRecord = await registry.resolveProvider(name);
-    return { provider, assessment: assessProvider(provider) };
+  // Mirrors core's own `safeEmit` (node.ts, not exported): narration must
+  // never break the loop here either. `rate()` is the only caller.
+  function emitLoopEvent(body: LoopEventVariant): void {
+    if (!config.onLoopEvent) return;
+    const event: LoopEvent = stamp(body);
+    try {
+      const outcome = config.onLoopEvent(event);
+      if (outcome && typeof (outcome as Promise<void>).then === 'function') {
+        (outcome as Promise<void>).catch(() => {});
+      }
+    } catch {
+      // Deliberately silent -- see AssayNodeConfig.onLoopEvent's doc comment.
+    }
   }
 
   return {
     async discover(capabilityId) {
-      return resolveAndAssess(capabilityId);
+      // Routes through `AssayNode.discover` (fix for the design-review
+      // finding on #83: this used to call `registry.resolveProvider`
+      // directly, bypassing the node entirely and emitting no `discover`
+      // LoopEvent -- invisible to the live dashboard). `assessProvider` is
+      // the same pure, exported function `AssayNode.assess()` uses
+      // internally, applied here over the already-resolved record instead of
+      // a second `resolveProvider` call.
+      const provider: ProviderRecord = await node.discover(capabilityId);
+      return { provider, assessment: assessProvider(provider) };
     },
 
     async payAndCall(capabilityId, request, force = false) {
@@ -108,6 +245,16 @@ export function createLiveAssayNode(config: LiveAssayNodeConfig): AssayNodePort 
       const provider = await registry.resolveProvider(capabilityId);
       const requestHash = hashRequest(provider.manifest.capabilityId, request);
       const { txId } = await payments.pay(provider.manifest.priceHbar, requestHash);
+      // Same class of bypass #83's design review flagged on `discover`
+      // (issue #84): `payments.pay()` here is called directly against the
+      // raw port, not through `AssayNode.payAndCall`, so it would otherwise
+      // never emit the `{step:'pay', phase:'paid'}` LoopEvent real money
+      // actually moving deserves -- invisible to the live dashboard even
+      // though HBAR really left the account. `node.serve()` right after this
+      // still emits its own real confirming/confirmed/serve/accept events,
+      // since `serve()` itself is not bypassed here, only the pay/decline
+      // policy step is.
+      emitLoopEvent({ step: 'pay', phase: 'paid', name: capabilityId, txId, amountHbar: provider.manifest.priceHbar });
       return node.serve({
         provider: capabilityId,
         capabilityId: provider.manifest.capabilityId,
@@ -152,12 +299,21 @@ export function createLiveAssayNode(config: LiveAssayNodeConfig): AssayNodePort 
      *    (RPC error, out-of-range value, etc.) this file does not paper over
      *    that, it surfaces the underlying error, same "fail with a clear,
      *    named message on a real failure" posture `challenge` has.
+     *
+     * Narrated since issue #84 (see the module doc comment): the reputation
+     * write below emits the same `SettlementLoopEvent` shape `settle()`'s
+     * valid-verdict path does (`step: 'reputation'`), just synthesized here
+     * rather than inside `AssayNode`, since core has no `rate` verb for it to
+     * live on.
      */
     async rate(jobId, satisfied, _comment) {
       const job = node.jobs.get(jobId);
       if (job.status !== 'served') {
         throw new RateNotApplicableError(jobId, job.status);
       }
+
+      const start = Date.now();
+      const elapsed = () => Date.now() - start;
 
       // `updateReputation`'s `delta` reads, from `@assay/registry`'s own
       // `FakeRegistryPort` (the only concrete semantics written down so
@@ -166,12 +322,111 @@ export function createLiveAssayNode(config: LiveAssayNodeConfig): AssayNodePort 
       // a fresh read, not guessed as `{ jobs: 1 }`.
       const current = await registry.resolveProvider(job.provider);
       const closed = node.jobs.transition(jobId, 'settled');
-      await registry.updateReputation(job.provider, {
-        jobs: current.reputation.jobs + 1,
-        score: satisfied ? current.reputation.score + 1 : current.reputation.score,
+
+      emitLoopEvent({
+        step: 'reputation',
+        progress: { phase: 'writing-reputation', elapsedMs: elapsed() },
+        before: current.reputation,
       });
 
+      try {
+        const { txHash, reputation } = await registry.updateReputation(job.provider, {
+          jobs: current.reputation.jobs + 1,
+          score: satisfied ? current.reputation.score + 1 : current.reputation.score,
+        });
+        emitLoopEvent({
+          step: 'reputation',
+          progress: { phase: 'reputation-confirmed', elapsedMs: elapsed(), txHash, reputation },
+          before: current.reputation,
+        });
+      } catch (cause) {
+        emitLoopEvent({
+          step: 'reputation',
+          progress: { phase: 'reputation-failed', elapsedMs: elapsed() },
+          before: current.reputation,
+        });
+        emitLoopEvent({ step: 'reputation', progress: { phase: 'done', elapsedMs: elapsed(), job: closed } });
+        // Unlike settle(), rate() has never wrapped this in a named error
+        // (see this method's doc comment: it "surfaces the underlying
+        // error" as-is) -- narration does not change that contract.
+        throw cause;
+      }
+
+      emitLoopEvent({ step: 'reputation', progress: { phase: 'done', elapsedMs: elapsed(), job: closed } });
       return closed;
+    },
+
+    /**
+     * Read-only sibling of `challenge` (issue #84): calls `AssayNode.verifyClaim`
+     * for the real re-derivation and verdict, then attaches the job's full
+     * claim set (a second, cheap in-memory `jobs.get`, no extra network call)
+     * so the tool layer can show what was claimed next to what the chain
+     * says, without hardcoding any signal name.
+     */
+    async verifyClaim(jobId, claimKey): Promise<VerifyClaimResult> {
+      const verdict = await node.verifyClaim(jobId, claimKey);
+      const job = node.jobs.get(jobId);
+      return { jobId, claimKey, claims: job.claims, verdict };
+    },
+
+    /**
+     * Agent self-onboarding (issue #84): turns a bare `label` into the full
+     * ENS name and calls `AssayNode.register()` for the real bond-then
+     * -manifest-then-reputation sequence (never reimplemented here -- see
+     * `AssayNode.register`'s own doc comment for why the ordering is forced).
+     * `onProgress`, if given, is wired to the same `onRegisterProgress` tick
+     * stream `AssayNodeConfig` already reports through (see
+     * `activeRegisterListener` above), so the tool layer can narrate this
+     * call's own ~25s without a second, parallel progress mechanism.
+     */
+    async registerProvider(label, manifest, bondHbar, onProgress): Promise<RegisterProviderResult> {
+      if (!config.ensParentName) {
+        throw new MissingEnsParentNameError();
+      }
+      if (label.includes('.')) {
+        throw new InvalidProviderLabelError(label);
+      }
+      const name = `${label}.${config.ensParentName}`;
+
+      activeRegisterListener = onProgress;
+      try {
+        const result = await node.register({ name, manifest, bondHbar });
+        return { name, ...result };
+      } finally {
+        activeRegisterListener = undefined;
+      }
+    },
+
+    /**
+     * Resolves every configured candidate name through the same `discover`
+     * path above (issue #84), one candidate's failure turned into a
+     * clearly-labelled miss rather than failing the whole call. Runs the
+     * resolves concurrently: each is an independent read (real ENS or
+     * whatever `registry` this node was built with), so there is no ordering
+     * dependency between them to preserve.
+     */
+    async listProviders(): Promise<ProviderListItem[]> {
+      const names = config.candidateProviderNames ?? [];
+      return Promise.all(
+        names.map(async (name): Promise<ProviderListItem> => {
+          try {
+            const provider = await node.discover(name);
+            return { name, outcome: 'ok', provider, assessment: assessProvider(provider) };
+          } catch (error) {
+            return { name, outcome: 'miss', reason: error instanceof Error ? error.message : String(error) };
+          }
+        }),
+      );
+    },
+
+    /** Thin, read-only pass-through to `AssayNode.jobs.get` (issue #84): no network call, `UnknownJobError` propagates as-is. */
+    async getJob(jobId): Promise<Job> {
+      return node.jobs.get(jobId);
+    },
+
+    /** Thin, read-only pass-through to `AssayNode.jobs.list` (issue #84): no network call. */
+    async listJobs(): Promise<Job[]> {
+      return node.jobs.list();
     },
   };
 }
