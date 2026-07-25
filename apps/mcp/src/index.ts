@@ -192,13 +192,13 @@ export function buildLiveNodeFromEnv(): AssayNodePort {
   // own distinct capability id so it can coexist with the honest one in this
   // single `CapabilityRegistry` (`createCapabilityRegistry.register` keys
   // purely on `capability.id`; two entries under `'rugscore'` would throw
-  // `DuplicateCapabilityError`). This is what makes `liar.<parent>` dispatch
+  // `DuplicateCapabilityError`). This is what makes `vantage.<parent>` dispatch
   // to a capability that actually lies, rather than colliding with the
   // honest one and silently running honest code under a dishonest name --
   // see `packages/registry/scripts/reset-demo-state.ts`, which republishes
-  // `liar.<parent>`'s manifest with `capabilityId: LYING_CAPABILITY_ID` to
+  // `vantage.<parent>`'s manifest with `capabilityId: LYING_CAPABILITY_ID` to
   // match. Verified by reading the code (not assumed): before this change,
-  // `liar.<parent>`'s manifest carried whatever `capabilityId` it already
+  // `vantage.<parent>`'s manifest carried whatever `capabilityId` it already
   // had on-chain (`rugscore`, spread from `before.manifest`), so calling
   // `pay_and_call` on it ran the honest capability -- there was no live lie
   // to catch, only a rehearsed transcript of one.
@@ -212,7 +212,7 @@ export function buildLiveNodeFromEnv(): AssayNodePort {
   // change.
   const candidateProviderNames = process.env.ASSAY_CANDIDATE_PROVIDER_NAMES
     ? process.env.ASSAY_CANDIDATE_PROVIDER_NAMES.split(',').map((name) => name.trim()).filter(Boolean)
-    : [`rugscore.${env.ENS_PARENT_NAME}`, `liar.${env.ENS_PARENT_NAME}`];
+    : [`rugscore.${env.ENS_PARENT_NAME}`, `vantage.${env.ENS_PARENT_NAME}`];
 
   return createLiveAssayNode({
     registry,
