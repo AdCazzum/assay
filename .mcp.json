@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "assay": {
+      "command": "pnpm",
+      "args": ["--filter", "@assay/mcp", "exec", "tsx", "src/index.ts"],
+      "env": {
+        "ASSAY_LOOP_EVENTS_SINK": ".assay/loop-events.ndjson"
+      }
+    }
+  }
+}
