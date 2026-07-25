@@ -37,7 +37,7 @@ import type { LoopEvent } from '@assay/dashboard';
 import type { Manifest } from '@assay/core';
 import { buildLiveDemoNodes } from '../src/live-node.js';
 import { formatReputationHeartbeat } from '../src/reputation-heartbeat.js';
-import { DEFAULT_CHALLENGE_BOND_HBAR, DEFAULT_CLAIM_KEY, DEFAULT_LIAR_TOKEN, DEFAULT_REQUEST_TOKEN } from '../src/session.js';
+import { DEFAULT_CHALLENGE_BOND_HBAR, DEFAULT_CLAIM_KEY, DEFAULT_LIAR_TOKEN, DEFAULT_REQUEST_TOKEN } from '../src/token-fixtures.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
