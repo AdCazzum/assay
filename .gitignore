@@ -30,3 +30,6 @@ apps/demo/captures/*.scenic.ndjson
 .claude/worktrees/
 .DS_Store
 *.log
+
+# on-chain audit trail written by the MCP server at run time
+.assay/

@@ -4,90 +4,83 @@ Everything below is measured, not estimated. Supersedes the keypress-runner run 
 issues #93/#94 replaced: there is no keyboard driving the loop any more, an autonomous agent
 does, so "press [1] discover" is gone and the timings below are from a real, unattended run.
 
-## The scenic runner: `apps/demo`
 
-One command, one screen, no keypresses:
+## What the demo is
 
+A **real Claude Code session** in this repo, driving the real loop through the `assay` MCP
+server. Not a script, and not a custom terminal app.
+
+## Running it: Claude Code, with the server registered
+
+The demo is a **real Claude Code session** in this repo, not a script and not a custom
+terminal app:
+
+```bash
+./scripts/demo.sh          # reset both providers first (~57s). Never on stage.
+claude                     # then, in the session:
+/assay-demo
 ```
-pnpm --filter @assay/demo exec tsx src/index.ts live                      # real agent, real networks
-pnpm --filter @assay/demo exec tsx src/index.ts rehearsal [capturePath]   # offline replay of a captured run
-```
 
-`live` spawns a real headless Claude agent (`claude -p`) against the real `@assay/mcp` server,
-over the mission prompt in `apps/mcp/agent/prompt.md`. Nothing is scripted: the agent decides
-which providers to consult, whether to pay, which claims to verify, and whether to challenge.
-Two columns, refreshed together:
+`.mcp.json` registers the `assay` server, so Claude Code discovers it on open. Confirm with
+`claude mcp list`, which should show `assay: ... Connected`.
 
-- **left** — the agent's own words: its reasoning text verbatim, each MCP tool call it chooses
-  with its arguments, each tool's result. Never paraphrased.
-- **right** — `@assay/dashboard`'s own `renderState()`, fed by the real `LoopEvent`s the live
-  MCP server process streams out over the NDJSON sink (issue #93), not narration invented by
-  this app.
+`.claude/commands/assay-demo.md` holds the prompt. It sets a goal and a budget and **never
+names the provider to distrust, the claim to check, or when to challenge**. That is the whole
+point: what the audience watches is the model deciding, and a prompt that scripted the decision
+would make the demo a performance. SPEC section 16 is explicit about this being the failure to
+avoid.
 
-`rehearsal` replays a captured `.scenic.ndjson` file (see below) at the exact pace it was
-recorded, through the identical rendering pipeline, with `REPLAY` declared in the HUD
-throughout. With no path given it picks the most recently captured file under
-`apps/demo/captures/`.
+### Why this rather than a custom screen
 
-## The transport (issue #93)
+An earlier attempt rendered the agent's stream and the loop's events into a purpose-built
+terminal UI. It was deleted, for two reasons that are worth remembering.
 
-`claude` spawns the MCP server over stdio, so the loop's events happen in a different process
-from anything that displays them, and stdout is the MCP protocol channel and cannot carry them.
-`ASSAY_LOOP_EVENTS_SINK=<path>` makes `apps/mcp/src/index.ts` open that path
-(`fs.createWriteStream(..., {flags:'a'})`) and write one NDJSON line per `LoopEvent`, using the
-same `createEventStamper()` the node emits from so `seq` stays coherent. Unset (the default): no
-sink, no behaviour change, exactly as core's hook already is when absent.
+It was hard to read, which is a fixable problem. But the real one is that **a renderer we wrote
+is less credible than the tool the audience already uses.** A judge has no way to know whether
+our compositor is showing them the truth. In Claude Code they see the MCP server badge, the
+real tool names, the arguments, and the raw JSON that came back. Nothing about it has to be
+taken on trust.
 
-One companion wire beyond the issue's literal text: a second line shape, tagged `kind:
-"heartbeat"`, carries `@assay/registry`'s `onReputationWriteAttempt` and `@assay/payments`'s
-`onConfirmAttempt` ticks — the two real sub-3-second (and sub-5-second) cadences that would
-otherwise be invisible across the process boundary during the 8-25s ENS write and the ~4s
-payment confirm. `apps/demo/src/scenic-loop-mapper.ts` feeds the reputation ones straight into
-this app's already-tested `formatReputationHeartbeat()`, unchanged; only its input source moved
-from an in-process callback to a parsed sink line.
+It also makes the demo genuinely interactive in the way that matters: a judge can ask for a
+different token, or ask the agent why it decided something, and watch it answer.
 
-`apps/demo/src/sink-tailer.ts` polls the file every 100ms, splits on newlines, and holds a
-partial trailing line across polls exactly like `apps/mcp/scripts/run-agent.ts` already has to
-for the agent's own stdout chunks. The sink file not existing yet is a normal pre-run state, not
-an error.
+### What is lost, and how it is covered
 
-**Proven, not asserted: a failing sink does not break a tool call.**
-`apps/mcp/src/loop-event-sink.test.ts` drives `createLoopEventSink` against a path under a
-directory that never exists, and asserts neither `sinkLoopEvent`/`sinkHeartbeat` ever throws,
-and — the load-bearing case — that no `uncaughtException` escapes (an unhandled `Writable`
-`'error'` event is fatal by default; the explicit `.on('error', ...)` listener is what turns a
-broken sink into "narration silently stops" instead of "the process crashes mid-payment").
+**Pacing control.** Claude Code decides its own path and may take longer or shorter than the
+115s a scripted run took. Do not promise a duration.
 
-## The capability-wiring fix this needed first
+**The offline fallback.** There is no rehearsal mode any more. The recorded clip (#31) is the
+only thing that survives dead wifi, so record it after a rehearsal that went well.
 
-Before this work, `liar.assay.eth`'s published manifest carried `capabilityId: "rugscore"` —
-the *honest* capability's own id — because nothing had ever published it under anything else,
-and `apps/mcp`'s live server only ever registered one capability. Calling `pay_and_call` on
-`liar.assay.eth` therefore ran the honest code under a dishonest name: there was no live lie to
-catch, only a rehearsed transcript of one.
-
-Fixed by registering `createLyingRugScoreProvider({ graph }, { id: 'rugscore-liar' })` as a
-*second* capability entry (`apps/mcp/src/index.ts`) and republishing `liar.assay.eth`'s manifest
-with `capabilityId: 'rugscore-liar'` (`packages/registry/scripts/reset-demo-state.ts`). Verified
-live after `reset-demo-state.ts` ran: `liar.assay.eth`'s manifest now reads
-`capabilityId: "rugscore-liar"` on Sepolia, and a real `pay_and_call` against it dispatches to
-the lying capability for real.
 
 ## The mission prompt
 
-`apps/mcp/agent/prompt.md` is the literal text specified for this work: `list_providers` first,
-weigh every signal (not just the headline score), decide which provider(s) to pay, **verify
-every claim a job returned, not only the one that looks suspicious**, challenge if a claim comes
-back false, `rate` if everything holds. It never names which provider lies or which claim to
-check — SPEC.md §16's rule that "agentic must be real reasoning, not a hardcoded `if`" holds for
-the prompt as much as the code. `scripts/run-agent.ts`'s `ALLOWED_TOOLS` was widened to match
-(all eight tools the prompt names; `register_provider` excluded, the mission never asks for it).
+`.claude/commands/assay-demo.md`. It sets a goal and a budget and deliberately **never names
+the provider to distrust, the claim to check, or when to challenge**. Two providers exist on
+chain, one clean and one carrying slashes, and `verify_claim` lets the agent check a claim
+before disputing it, so the arc comes out of the agent's own incentives.
+
+If a run does not reach the challenge, that is information about the design. Do not add a hint
+until it does: SPEC section 16 names a scripted decision dressed as agency as the failure this
+whole project has to avoid.
+
+## The on-chain audit trail
+
+`.mcp.json` sets `ASSAY_LOOP_EVENTS_SINK=.assay/loop-events.ndjson`, so the MCP server appends
+one NDJSON line per loop event as it runs: transaction ids, block numbers, claim values,
+reputation before and after. It never touches stdout, which is the MCP protocol channel, and a
+failing sink cannot break a tool call.
+
+It is not a display feed, it is evidence. After a run, that file is what lets anyone reconcile
+what the agent said against what actually happened on chain, independently of the transcript.
+Gitignored, since it is per-run.
 
 ## A real run, measured (2026-07-25)
 
-One full `tsx src/index.ts live` run, real Sepolia/Hedera/Graph networks, no fixture anywhere.
-Capture saved at `apps/demo/captures/2026-07-25T16-07-49-812Z-9d023c.scenic.ndjson` (committed,
-force-added past the `.gitignore` rule, as the offline-rehearsal fallback).
+One full agent run, real Sepolia/Hedera/Graph networks, no fixture anywhere. Measured through
+the now-deleted scenic runner, but the agent's behaviour is the MCP server's, not the runner's,
+so the numbers still describe what a Claude Code session does. Re-time it on the new path before
+relying on the total.
 
 **Total wall clock: 114.3s** (`result.duration_ms`), 19 turns, $0.69 API cost, exit 0.
 
@@ -158,33 +151,7 @@ that a future issue should fix (e.g. resolving bonds through the mirror node by 
 rather than an in-memory map, or having `register_provider`/reset tooling and the live server
 share a bond ledger). It does not reflect on whether the agent's reasoning was real.
 
-## The offline rehearsal (issue #94's requirement)
 
-`apps/demo/src/scenic-capture.ts` records every raw line from both sources
-(`{source: 'agent'|'loop', recordedAtMs, payload}`) to one `.scenic.ndjson` file, relative to
-the run's own start. `rehearsal` replays it by waiting the exact recorded gap between
-consecutive records before re-emitting each one, through the *same* parsing/mapping/framing code
-the live run uses — not a second, parallel implementation. Verified: replaying the 2026-07-25
-capture above reproduces the same 115s run, the same two-column content, and the same "network
-looks stalled" warning at the same ~32s closing silence (a real gap in the original run, not an
-artifact of replay).
-
-## Launching it
-
-```bash
-./scripts/demo.sh reset       # ~57s, restores both providers. Never on stage.
-bash -lc './scripts/demo.sh'  # live: a real agent, real networks, ~115s
-./scripts/demo.sh rehearsal   # offline replay of the last capture
-```
-
-The wrapper exists because two separate things are needed and having only one is the common
-failure. `CLAUDE_CODE_OAUTH_TOKEN` is exported **above** the interactive guard in `~/.bashrc`,
-so a login shell has it and the agent can authenticate. `mise` (node, pnpm) is activated
-**below** that guard, so a login shell does **not** have it. That means plain
-`bash -lc 'pnpm ...'` fails with `pnpm: command not found`, which is what the docs used to
-tell you to run.
-
-## Before every run
 
 The reputation records are real and every run changes them, so reset first:
 
@@ -200,8 +167,8 @@ Takes ~35-60s (two providers, two real bonds, four ENS writes) and must end with
 | `rugscore.assay.eth` | score 78, 14 jobs, 0 slashes, bond 6x price, `capabilityId: "rugscore"` | without it the agent correctly declines to pay and the run never gets past discover |
 | `liar.assay.eth` | score 88, 9 jobs, 1 slash, bond 6x price, `capabilityId: "rugscore-liar"` | without the capability-id fix there is no live lie behind this name at all; without the reputation reset the score sits too low to visibly collapse again |
 
-`apps/demo/src/scenic-runner.ts` checks `rugscore.assay.eth`'s live reputation before ever
-spawning the agent (reusing `apps/demo/src/reset-check.ts`, kept exactly as it was) and refuses
+The deleted runner used to check `rugscore.assay.eth`'s live reputation before spawning the
+agent and refuse
 to start with a clear message if it would make the agent's own pay decision decline.
 
 Checklist:
@@ -211,12 +178,13 @@ Checklist:
       non-login/non-interactive shell needs `bash -lc`, and needs `mise`'s node/pnpm on `PATH`
       too since mise's own activation sits behind an interactive guard)
 - [ ] Hedera operator balance non-trivial
-- [ ] one dry run of `pnpm --filter @assay/demo exec tsx src/index.ts rehearsal`, which needs no
+- [ ] `claude mcp list` shows `assay: ... Connected`, which needs no
       network and confirms the two-column narration renders at the same pace a live run will
+
 
 ## Fallback
 
-The committed capture (`apps/demo/captures/2026-07-25T16-07-49-812Z-9d023c.scenic.ndjson`) is
+The transcripts under `apps/mcp/agent/transcripts/` are
 the fallback if conference wifi dies mid-demo: `rehearsal` needs no network at all and reproduces
 the exact run above, `REPLAY` declared in the HUD throughout.
 
@@ -224,14 +192,20 @@ Every claim on screen is independently checkable afterwards: HashScan for the He
 transactions, Sepolia Etherscan for the ENS writes, and the block numbers against The Graph
 directly.
 
-## What this replaced
 
-Deleted entirely (issue #94's own instruction: "two demos where one is real is worse than one
-demo"): `apps/demo/src/main.ts`, `session.ts`, `step-machine.ts`, `rehearsal.ts`,
-`rehearsal-main.ts`, `screen.ts`, `fakes.ts`, `legend.ts`, and their tests — the whole
-keypress-driven step machine. Kept, per #94's own list of what's genuinely reusable:
-`reset-check.ts` (the readiness check), `@assay/dashboard`'s mapping (`createCoreEventMapper`,
-now driven off parsed sink lines instead of an in-process callback), and
-`scripts/capture-fixtures.ts` (the fixture capture for `@assay/dashboard`'s own fixtures,
-unrelated to this app's runtime — its token/claim constants moved to the new
-`token-fixtures.ts` since their previous home, `session.ts`, no longer exists).
+## What this replaced, and why it is worth remembering
+
+Two earlier attempts, both mine, both wrong in instructive ways.
+
+**A keypress runner** (#86) that stepped through the loop on 1/2/3/4. It worked and it was not
+a demo: pressing keys to advance a fixed order is launching scripts with an extra step. The
+mockup was mine and the goal it was built against was never the one that had been stated.
+
+**A scenic terminal UI** (#94) that composited the agent's stream and the loop's events into one
+purpose-built screen. It was unreadable, which was fixable. The reason it was deleted is the
+other one: **a renderer we wrote is less credible than the tool the audience already uses.** A
+judge cannot verify that our compositor showed them the truth. In Claude Code they see the MCP
+badge, the real tool names, the arguments and the raw JSON. Nothing has to be taken on trust.
+
+What survived from both, because it was the actually valuable part: the nine MCP tools, the
+loop event stream in core, `verify_claim`, and the NDJSON audit trail.
