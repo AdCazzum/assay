@@ -79,7 +79,21 @@ export type LiveWatchdogNode = {
   payments: PaymentsPort;
   network: HederaNetwork;
   hashscanBaseUrl: string;
-  /** The ENS name whose manifest+reputation this run acts on. Defaults to `rugscore.<ENS_PARENT_NAME>`. */
+  /**
+   * The ENS name whose manifest+reputation this run acts on. Defaults to
+   * `liar.<ENS_PARENT_NAME>` -- a **sacrificial** subname, deliberately
+   * separate from the demo's good provider (`rugscore.<ENS_PARENT_NAME>`,
+   * see `packages/registry/scripts/reset-demo-state.ts`). Issue #64: every
+   * rehearsal of this watchdog serves a real job, challenges it, and (in
+   * `lying` mode) triggers a real slash + a real ENS reputation drop -- if
+   * that landed on the same name the demo's opening beat depends on, each
+   * rehearsal would re-damage the very state the reset script just fixed.
+   * Override with `WATCHDOG_PROVIDER_NAME` (e.g. to point the run sheet at
+   * yet another name); needs no on-chain creation step first, since
+   * `assay.eth`'s wildcard resolver authorizes any subname of it (verified
+   * by static call, see issue #64 and `packages/registry/scripts/smoke.ts`'s
+   * doc comment).
+   */
   providerName: string;
   /** Recovers the txId of the last `payments.slash()` call `node.settle()` made, if any. */
   getLastSlash: () => SlashRecord | undefined;
@@ -151,7 +165,12 @@ export function buildLiveWatchdogNode(capabilityMode: CapabilityMode): LiveWatch
   const config: AssayNodeConfig = { registry, payments, graph, capabilities, challengerAccountId };
   const node = createAssayNode(config);
 
-  const providerName = process.env.WATCHDOG_PROVIDER_NAME || `rugscore.${env.ENS_PARENT_NAME}`;
+  // Sacrificial by default (see `LiveWatchdogNode.providerName`'s doc
+  // comment above): "liar" both names what this app demos against
+  // (the declared lying-provider harness, SPEC.md §11) and keeps it
+  // visibly distinct from the good provider a human skimming .env would
+  // otherwise conflate the two names for.
+  const providerName = process.env.WATCHDOG_PROVIDER_NAME || `liar.${env.ENS_PARENT_NAME}`;
 
   return {
     node,
