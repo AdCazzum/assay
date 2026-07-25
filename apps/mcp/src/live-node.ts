@@ -16,7 +16,8 @@
  *    policy check is baked into it), so honoring `force` means reimplementing
  *    its pay step here against the raw `PaymentsPort`, then handing off to
  *    `AssayNode.serve()` for the payment-gated part core still owns. This
- *    duplicates `node.ts`'s private `hashRequest` (three lines, not exported)
+ *    uses `@assay/core`'s exported `hashRequest`, so the memo it writes and the
+ *    memo `serve()` checks can never drift apart
  *    — a small, known bit of drift risk flagged in the PR, not hidden here.
  *
  * `challenge` now that #26/#27 landed in core: it calls `AssayNode.challenge`
@@ -34,13 +35,13 @@
  * still owes it.
  */
 
-import { createHash } from 'node:crypto';
 import {
   assessProvider,
   createAssayNode,
   type AssayNodeConfig,
   type Job,
   type ProviderRecord,
+  hashRequest,
 } from '@assay/core';
 import type { AssayNodePort, DiscoverResult } from './node-port.js';
 
@@ -66,20 +67,6 @@ export class RateNotApplicableError extends Error {
     this.jobId = jobId;
     this.status = status;
   }
-}
-
-/**
- * Duplicated from `@assay/core/node.ts`'s private `hashRequest`, which is not
- * exported. Deterministic and dependency-free (`node:crypto` is a Node
- * builtin), so the duplication is low-risk, but it is still duplication: if
- * `AssayNode.payAndCall`'s hashing ever changes, this needs to change with
- * it. The real fix is for core to export `hashRequest` (or accept a per-call
- * policy override so `force` would not need to reimplement the pay step at
- * all) — flagged in the PR as owed, not fixed here per the instruction not to
- * add to `packages/core` while #49 is in flight there.
- */
-function hashRequest(capabilityId: string, request: unknown): string {
-  return createHash('sha256').update(JSON.stringify({ capabilityId, request })).digest('hex');
 }
 
 /**

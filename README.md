@@ -106,14 +106,24 @@ submitted, mirror-node-confirmed transaction. Every ENS read and write. Every Gr
 query, against mainnet data. The verifier's logic. The MCP server and the Claude agent
 driving it.
 
-**But only one funded testnet account exists.** Every Hedera transfer run so far,
-including in the demo runs and transcripts referenced above, is a self-transfer
-(`0.0.9695801 -> 0.0.9695801`): the transaction path is real, but there is no second
-account to act as payee, bond escrow, or challenger, so the bond/slash amount nets to
-zero and no HBAR actually leaves the operator's control net of fees. See
-`packages/payments/README.md` for the mirror-node evidence and the env vars
-(`SPIKE_PAY_TO_ACCOUNT_ID` / `SPIKE_BOND_ACCOUNT_ID` / `SPIKE_CHALLENGER_ACCOUNT_ID`) that
-would exercise a real second party once one is funded.
+**Value moves between two distinct accounts.** For most of the build there was only
+one funded testnet account, so every Hedera transfer was a self-transfer: real
+transactions, but the amount netted to zero and nothing left the operator's control net
+of fees. That was disclosed here, and it turned out to matter more than as a disclosure.
+When the payment gate started verifying the amount, the loop broke: **the mirror node
+reports a self-transfer as only the fee movement**, so the payment never appears in the
+transfer list and no amount check can pass on one. Every unit test passed, because the
+fakes model a transfer that does not net out. Only the live run showed it.
+
+The fix was a second account
+(`packages/payments/scripts/create-account.ts`), not a weaker check. A payment now reads:
+
+```
+0.0.9695801  -5.00143077 HBAR
+0.0.9743633  +5 HBAR
+```
+
+which is what makes verifying the amount meaningful in the first place.
 
 **Staged, and disclosed on screen when it runs.** The "lying provider" is
 `createLyingRugScoreProvider`, a deliberately tampered test harness that runs the real

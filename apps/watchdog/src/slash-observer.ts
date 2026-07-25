@@ -36,6 +36,14 @@ export function observeSlash(payments: PaymentsPort): ObservedPayments {
     payments: {
       pay: (amountHbar, requestHash) => payments.pay(amountHbar, requestHash),
       confirm: (txId) => payments.confirm(txId),
+      // Forwarded conditionally because `confirmPayment` is optional on the
+      // port. Omitting it would silently downgrade the watchdog to the weaker
+      // SUCCESS-only gate: `serve()` falls back to `confirm()` when the method
+      // is absent, so a wrapper that quietly drops it turns a real check into
+      // no check, with nothing failing to show it.
+      ...(payments.confirmPayment
+        ? { confirmPayment: (input: Parameters<NonNullable<PaymentsPort['confirmPayment']>>[0]) => payments.confirmPayment!(input) }
+        : {}),
       postBond: (amountHbar) => payments.postBond(amountHbar),
       async slash(bondRef, toChallenger) {
         const result = await payments.slash(bondRef, toChallenger);

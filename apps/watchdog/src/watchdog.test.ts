@@ -131,3 +131,36 @@ describe('challengeAndSettle', () => {
     );
   });
 });
+
+describe('observeSlash forwarding', () => {
+  it('forwards confirmPayment, so wrapping does not downgrade the payment gate', async () => {
+    // serve() falls back to the weaker SUCCESS-only confirm() when the port has
+    // no confirmPayment, so a wrapper that drops it turns a real amount/memo
+    // check into no check at all, silently.
+    const calls: string[] = [];
+    const base = {
+      pay: async () => ({ txId: 'tx' }),
+      confirm: async () => true,
+      confirmPayment: async (input: { txId: string }) => {
+        calls.push(input.txId);
+        return { confirmed: true as const };
+      },
+      postBond: async () => ({ bondRef: 'b', txId: 'tx' }),
+      slash: async () => ({ txId: 'tx' }),
+    };
+    const { payments } = observeSlash(base as never);
+    expect(payments.confirmPayment).toBeDefined();
+    await payments.confirmPayment!({ txId: 'tx-1', expectedAmountHbar: 5, expectedMemo: 'memo' });
+    expect(calls).toEqual(['tx-1']);
+  });
+
+  it('omits confirmPayment when the wrapped port does not have it', () => {
+    const base = {
+      pay: async () => ({ txId: 'tx' }),
+      confirm: async () => true,
+      postBond: async () => ({ bondRef: 'b', txId: 'tx' }),
+      slash: async () => ({ txId: 'tx' }),
+    };
+    expect(observeSlash(base as never).payments.confirmPayment).toBeUndefined();
+  });
+});
