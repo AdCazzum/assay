@@ -20,10 +20,20 @@ replay does.
 | `←` | previous |
 | `1`-`9` | jump to a slide |
 | `n` | speaker notes (one line per slide, why that slide exists) |
-| `f` | full screen |
+| `f` | full screen, or zen mode where the browser will not allow it (see below) |
+| `esc` | leave zen mode |
 | `p` | print the handout |
 
 The URL hash tracks the slide, so a reload lands where you were.
+
+## Present it from a browser, not from a preview pane
+
+An editor's HTML preview usually runs the page in a sandboxed iframe, and the Fullscreen
+API is blocked there. Emdash is one of these: it previews HTML with
+`sandbox="allow-scripts"` and no `allow-fullscreen` token, so `requestFullscreen()`
+rejects and nothing happens. The deck now catches that, falls back to hiding its own
+footer so the slides get the pixels back, and says so on screen instead of failing
+silently. It is still a fallback: on stage, open the file in a real browser.
 
 ## The handout
 

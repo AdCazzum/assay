@@ -178,6 +178,23 @@
 
   .handout { display: none; }
 
+  /* Zen: the fallback when real full screen is unavailable, which is the case in
+     any sandboxed iframe preview (emdash previews HTML with sandbox="allow-scripts",
+     and the Fullscreen API is blocked without an allow-fullscreen token). Gives back
+     the pixels we control: the HUD and the padding it needs. */
+  body.zen .hud { display: none; }
+  body.zen #notes { bottom: 0; }
+  body.zen .slide { padding-bottom: 4.5vh; }
+
+  #toast {
+    position: fixed; z-index: 7; left: 50%; bottom: 4.5em; transform: translateX(-50%);
+    max-width: 46em; padding: .7em 1.1em; border: 1px solid var(--line); border-left: 3px solid var(--warn);
+    background: #0b1016; color: var(--dim); font-size: .8em; line-height: 1.5;
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  #toast.on { opacity: 1; }
+  body.zen #toast { bottom: 1.6em; }
+
   /* ---------- print: the leave-behind ---------- */
 
   @page { size: A4; margin: 14mm 13mm; }
@@ -479,6 +496,7 @@ apps/
 </main>
 
 <div id="notes"></div>
+<div id="toast"></div>
 
 <div class="hud">
   <div class="bar" id="bar"></div>
@@ -571,8 +589,41 @@ apps/      mcp (the MCP server, nine tools) · provider (402 gate) · watchdog �
   var notesEl = document.getElementById('notes');
   var counter = document.getElementById('counter');
   var bar     = document.getElementById('bar');
+  var toastEl = document.getElementById('toast');
   var notesOn = false;
   var i = 0;
+
+  var toastTimer;
+  function toast(msg) {
+    toastEl.innerHTML = msg;
+    toastEl.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('on'); }, 6000);
+  }
+
+  function setZen(on) {
+    document.body.classList.toggle('zen', on);
+    fit(slides[i]);
+  }
+
+  // Real full screen where the browser allows it. A sandboxed iframe preview does
+  // not: document.fullscreenEnabled is false there and requestFullscreen() rejects,
+  // which is why pressing f used to do nothing at all. Fall back to zen mode and
+  // say why, rather than failing silently.
+  function toggleFullscreen() {
+    if (document.fullscreenElement) { document.exitFullscreen(); return; }
+    if (document.body.classList.contains('zen')) { setZen(false); return; }
+    if (!document.fullscreenEnabled || !document.documentElement.requestFullscreen) {
+      setZen(true);
+      toast('Full screen is blocked here: this page is running inside a sandboxed preview. Showing the deck without its footer instead (<b>esc</b> to restore). For the real thing, open <b>docs/pitch/index.html</b> in a browser.');
+      return;
+    }
+    var p = document.documentElement.requestFullscreen();
+    if (p && p.catch) p.catch(function () {
+      setZen(true);
+      toast('The browser refused full screen. Showing the deck without its footer instead (<b>esc</b> to restore).');
+    });
+  }
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
 
@@ -628,9 +679,9 @@ apps/      mcp (the MCP server, nine tools) · provider (402 gate) · watchdog �
       case 'n': case 'N':
         notesOn = !notesOn; notesEl.classList.toggle('on', notesOn); break;
       case 'f': case 'F':
-        if (document.fullscreenElement) document.exitFullscreen();
-        else document.documentElement.requestFullscreen();
-        break;
+        toggleFullscreen(); break;
+      case 'Escape':
+        if (document.body.classList.contains('zen')) setZen(false); break;
       case 'p': case 'P':
         window.print(); break;
       default:
