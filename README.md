@@ -42,8 +42,9 @@ discover (ENS) -> check reputation (ENS) -> pay (Hedera) -> serve (The Graph)
 Three independent networks, no bridge, orchestrated by the Assay node (which is also
 an MCP server a real Claude agent drives live):
 
-- **The Graph** (Token API, mainnet, read-only): the source of truth for scores and
-  verification.
+- **The Graph** (mainnet, read-only): the source of truth for scores and verification,
+  read through **block-pinned subgraph queries** so a claim can be re-derived at exactly
+  the block it was stamped at.
 - **Hedera** (testnet): pay, bond, slash.
 - **ENS** (Sepolia): identity manifest and portable reputation in text records.
 
@@ -56,14 +57,84 @@ an MCP server a real Claude agent drives live):
 ## Repo layout
 
 ```
-packages/   core, registry (ENS), payments (Hedera), graph (Token API), cap-rugscore
+packages/   core, registry (ENS), payments (Hedera), graph (The Graph), cap-rugscore
 apps/       mcp (server), provider, watchdog, dashboard
 ```
 
+## What actually works
+
+Every step below has been executed against live networks, not simulated. Transaction ids
+and the reasoning behind each design choice are in the pull requests.
+
+| | |
+|---|---|
+| **Hedera testnet** | pay, bond and slash are real transactions. A payment binds its `requestHash` into the transaction memo, and the provider serves only after the mirror node confirms it. |
+| **The Graph** | `getTokenSignals(token, atBlock)` issues block-pinned subgraph queries. Two different blocks return genuinely different values, and a block outside the indexed range fails loudly rather than silently returning live data. |
+| **ENS on Sepolia** | `assay:manifest` and `assay:rep` are live text records. Reputation writes are real; nothing is cached and presented as written. |
+| **The verifier** | re-derives each claim at that claim's own `atBlock` and compares within per-signal tolerances. |
+| **The agent** | a real headless Claude agent drives the loop through the MCP server and decides for itself whether to pay. |
+
+The loop has run end to end, in both directions, on all three networks:
+
+```
+lying provider   challenge upheld  -> bond slashed on Hedera, ENS reputation 56 -> 26
+honest provider  challenge failed  -> no bond touched,        ENS reputation 26 -> 31
+```
+
+The second run is the one that matters. A system that only ever confirms a lie proves
+nothing about its verifier.
+
+### The agent genuinely decides
+
+`apps/mcp/agent/prompt.md` gives the agent a goal and a budget and never tells it whether
+to pay. Same prompt, three providers, three outcomes it reached on its own: `DECLINED`
+against a provider with slashes, `PAID` against a clean one. Transcripts are committed in
+`apps/mcp/agent/transcripts/`.
+
+On the declining run it went past what was asked, noticing the bond was only 1.00x the
+price and reasoning that lying is therefore roughly break-even for the provider, so there
+is no deterrent, "which is presumably how the slash ratio got to 33% in the first place".
+It then declined to use the available override on the grounds that it agreed with the
+policy rather than being blocked by it.
+
+### Real vs staged
+
+Stated plainly because a submission that hides this deserves to lose:
+
+**Real.** Every value transfer on Hedera (payment, bond, slash). Every ENS read and write.
+Every Graph query, against mainnet data. The verifier's logic. The MCP server and the
+Claude agent driving it.
+
+**Staged, and disclosed on screen when it runs.** The "lying provider" is
+`createLyingRugScoreProvider`, a deliberately tampered test harness that runs the real
+capability and alters exactly one claim. The watchdog's *timing* is scripted: it is told
+which job and claim to look at, where a real watchdog would decide on its own when to
+challenge. The challenge, the verifier, the slash and the ENS write in that path are all
+real.
+
+**Honest gaps.** A failed challenge should also cost the challenger a deposit (SPEC §7);
+there is no escrow to forfeit, so only the reputation half exists. Settlement is not
+atomic across three networks and the code does not pretend it is: the job's status is
+recorded before the ENS write, so a failed write leaves a truthful status and a named
+error. The demo runs one provider and one capability.
+
+### Measured timings
+
+Worth knowing before believing any "instant" claim about either chain:
+
+| | |
+|---|---|
+| Hedera payment, submit to mirror-node confirmed | **~4.1s** |
+| Hedera slash, transfer alone | **~0.4s** |
+| ENS text-record write, 7 samples | **12.4s to 24.6s**, median ~16.4s |
+
+The ENS spread is wide and does not converge, which matters more to a demo run sheet than
+the median does. See `docs/demo-run-sheet.md`.
+
 ## Status
 
-Work in progress, built over a 36 hour hackathon. The detailed design doc is kept
-private; this README is the public overview.
+Built over a 36 hour hackathon by one person with Claude Code. The detailed design doc is
+kept private; this README is the public overview.
 
 ## License
 
