@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { createEventStamper, type LoopEvent, type SettlementLoopEvent } from './events.js';
 import {
   createAssayNode,
   JobNotChallengeableError,
@@ -90,6 +91,7 @@ const echoCapability = makeEchoCapability();
 function buildNode(
   paymentsOpts?: FakePaymentsPortOptions,
   reputation: Partial<Reputation> = {},
+  onLoopEvent?: (event: LoopEvent) => void | Promise<void>,
 ) {
   const registry = new FakeRegistryPort().seed(PROVIDER_NAME, {
     manifest,
@@ -100,7 +102,7 @@ function buildNode(
   const capabilities = createCapabilityRegistry();
   capabilities.register(echoCapability);
 
-  const node = createAssayNode({ registry, payments, graph, capabilities });
+  const node = createAssayNode({ registry, payments, graph, capabilities, onLoopEvent });
   return { node, registry, payments, graph, capabilities };
 }
 
@@ -116,6 +118,7 @@ async function buildServedNode(
     reputation?: Partial<Reputation>;
     challengerAccountId?: string | null;
     onSettleProgress?: (info: SettleProgress) => void;
+    onLoopEvent?: (event: LoopEvent) => void | Promise<void>;
   } = {},
 ) {
   const registry = new FakeRegistryPort().seed(PROVIDER_NAME, {
@@ -133,6 +136,7 @@ async function buildServedNode(
     graph,
     capabilities,
     onSettleProgress: opts.onSettleProgress,
+    onLoopEvent: opts.onLoopEvent,
     challengerAccountId: opts.challengerAccountId === null ? undefined : (opts.challengerAccountId ?? CHALLENGER_ACCOUNT_ID),
   });
 
@@ -797,5 +801,413 @@ describe('createAssayNode: register (#17)', () => {
     const discovered = await node.discover(PROVIDER_NAME);
     expect(discovered.reputation).toEqual(result.reputation);
     expect(discovered.manifest.bondRef).toBe(result.bondRef);
+  });
+});
+
+describe('createAssayNode: verifyClaim (#83)', () => {
+  it("routes to capability.verify() with the full claim set at each claim's own atBlock, without transitioning the job or recording a verdict", async () => {
+    let calledWith: unknown;
+    const verdict: Verdict = { valid: true };
+    const { node, job, graph } = await buildServedNode({
+      verify: async (req, result, claims) => {
+        calledWith = { req, result, claims };
+        return verdict;
+      },
+    });
+
+    // Prove this doesn't fall back to "verify against the chain head": the
+    // fake graph's head is nowhere near the claim's own stamped atBlock, so
+    // if verify() ever got handed the head instead of atBlock this would be
+    // the wrong number.
+    expect(await graph.getLatestBlock()).not.toBe(job.claims[0]?.atBlock);
+    expect(job.claims.every((claim) => claim.atBlock === 12345)).toBe(true);
+
+    const returned = await node.verifyClaim(job.jobId, 'echoedLength');
+
+    expect(returned).toEqual(verdict);
+    expect(calledWith).toEqual({ req: 'hello', result: { echoed: 'hello' }, claims: job.claims });
+
+    // job state is completely untouched: still served, no verdict recorded
+    const unchanged = node.jobs.get(job.jobId);
+    expect(unchanged.status).toBe('served');
+    expect(unchanged.verdict).toBeUndefined();
+  });
+
+  it('does not mutate job state even on a false verdict, and repeated calls stay side-effect free', async () => {
+    const { node, job } = await buildServedNode({
+      verify: async () => ({ valid: false, badClaim: 'echoedLength', reason: 'lied' }),
+    });
+
+    await node.verifyClaim(job.jobId, 'echoedLength');
+    await node.verifyClaim(job.jobId, 'echoedLength');
+
+    const unchanged = node.jobs.get(job.jobId);
+    expect(unchanged.status).toBe('served');
+    expect(unchanged.verdict).toBeUndefined();
+  });
+
+  it('never calls settle(): an invalid verdict from verifyClaim never slashes anything', async () => {
+    const { node, payments, job } = await buildServedNode({
+      verify: async () => ({ valid: false, badClaim: 'echoedLength' }),
+    });
+
+    await node.verifyClaim(job.jobId, 'echoedLength');
+
+    expect(payments.slashCalls).toEqual([]);
+    expect(node.jobs.get(job.jobId).status).toBe('served');
+  });
+
+  it('unlike challenge(), can re-verify a job that already moved past served (challenged/slashed)', async () => {
+    const { node, job } = await buildServedNode({
+      verify: async () => ({ valid: false, badClaim: 'echoedLength' }),
+      reputation: { score: 80, jobs: 3, slashes: 0, bondHbar: 50 },
+    });
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+    const settled = await node.settle(job.jobId, verdict);
+    expect(settled.status).toBe('slashed');
+
+    // verifyClaim still works on an already-slashed job -- no status gate at all
+    const recheck = await node.verifyClaim(job.jobId, 'echoedLength');
+    expect(recheck).toEqual({ valid: false, badClaim: 'echoedLength' });
+
+    // and settle()'s own recorded status/verdict are untouched by the recheck
+    const stillSlashed = node.jobs.get(job.jobId);
+    expect(stillSlashed.status).toBe('slashed');
+    expect(stillSlashed.verdict).toEqual(verdict);
+  });
+
+  it('rejects an unknown claim key without ever calling verify()', async () => {
+    let verifyCalls = 0;
+    const { node, job } = await buildServedNode({
+      verify: async () => {
+        verifyCalls += 1;
+        return { valid: true };
+      },
+    });
+
+    await expect(node.verifyClaim(job.jobId, 'noSuchClaim')).rejects.toThrow(UnknownClaimError);
+    expect(verifyCalls).toBe(0);
+    expect(node.jobs.get(job.jobId).status).toBe('served');
+  });
+
+  it('rejects an unknown job id', async () => {
+    const { node } = buildNode();
+    await expect(node.verifyClaim('no-such-job', 'echoedLength')).rejects.toThrow(/Unknown job/);
+  });
+
+  it("propagates the capability's own verify() failure and leaves the job untouched at served, so it stays retryable", async () => {
+    const { node, job } = await buildServedNode({
+      verify: async () => {
+        throw new Error('The Graph is unreachable at this block');
+      },
+    });
+
+    await expect(node.verifyClaim(job.jobId, 'echoedLength')).rejects.toThrow(/unreachable/);
+    expect(node.jobs.get(job.jobId).status).toBe('served');
+  });
+
+  it('emits a VerifyLoopEvent with committed:false, and never emits a ChallengeLoopEvent', async () => {
+    const events: LoopEvent[] = [];
+    const registry = new FakeRegistryPort().seed(PROVIDER_NAME, seedRecord);
+    const payments = new FakePaymentsPort();
+    const graph = new FakeGraphPort();
+    const capabilities = createCapabilityRegistry();
+    const verdict: Verdict = { valid: true };
+    capabilities.register(makeEchoCapability(async () => verdict));
+    const node = createAssayNode({
+      registry,
+      payments,
+      graph,
+      capabilities,
+      onLoopEvent: (event) => { events.push(event); },
+    });
+
+    const { job } = await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+    events.length = 0; // discard the register/pay/serve/accept noise from payAndCall
+
+    const returned = await node.verifyClaim(job.jobId, 'echoedLength');
+
+    expect(returned).toEqual(verdict);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      step: 'verify',
+      jobId: job.jobId,
+      claimKey: 'echoedLength',
+      verdict,
+      committed: false,
+    });
+    expect(events.some((event) => event.step === 'challenge')).toBe(false);
+  });
+});
+
+describe('createAssayNode: loop events (#83)', () => {
+  it('emits a complete, artifact-bearing event stream across discover, the pay decision, pay, confirm, serve, accept, challenge, and the verdict', async () => {
+    const events: LoopEvent[] = [];
+    const lieVerdict: Verdict = { valid: false, badClaim: 'echoedLength', reason: 'the length was fabricated' };
+    const { node, job } = await buildServedNode({
+      verify: async () => lieVerdict,
+      reputation: { score: 80, jobs: 3, slashes: 0, bondHbar: 50 },
+      onLoopEvent: (event) => { events.push(event); },
+    });
+
+    // discover(): fired separately below, buildServedNode's own payAndCall doesn't call it
+    const discovered = await node.discover(PROVIDER_NAME);
+    expect(events).toContainEqual(
+      expect.objectContaining({ step: 'discover', outcome: 'ok', name: PROVIDER_NAME, provider: discovered }),
+    );
+
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+    await node.settle(job.jobId, verdict);
+
+    // pay: assessed -> paid -> confirming -> confirmed, in order, real artifacts attached
+    const payEvents = events.filter((event): event is Extract<LoopEvent, { step: 'pay' }> => event.step === 'pay');
+    expect(payEvents.map((event) => event.phase)).toEqual(['assessed', 'paid', 'confirming', 'confirmed']);
+    const paidEvent = payEvents.find((event) => event.phase === 'paid');
+    expect(paidEvent).toMatchObject({ txId: job.paymentTx, amountHbar: manifest.priceHbar });
+    const assessedEvent = payEvents.find((event) => event.phase === 'assessed');
+    expect(assessedEvent).toMatchObject({ name: PROVIDER_NAME, decision: { pay: true } });
+    if (assessedEvent?.phase === 'assessed') {
+      expect(assessedEvent.assessment.providerName).toBe(PROVIDER_NAME);
+    }
+
+    // serve + accept: the real, block-stamped job
+    expect(events).toContainEqual(expect.objectContaining({ step: 'serve', outcome: 'ok', job }));
+    expect(events).toContainEqual(expect.objectContaining({ step: 'accept', job }));
+
+    // challenge: started, then the verdict as a committed VerifyLoopEvent
+    expect(events).toContainEqual(
+      expect.objectContaining({ step: 'challenge', phase: 'started', jobId: job.jobId, claimKey: 'echoedLength' }),
+    );
+    const verifyEvents = events.filter((event) => event.step === 'verify');
+    expect(verifyEvents).toHaveLength(1);
+    expect(verifyEvents[0]).toMatchObject({
+      jobId: job.jobId,
+      claimKey: 'echoedLength',
+      verdict: lieVerdict,
+      committed: true,
+    });
+    expect(verifyEvents[0]).toMatchObject({ claims: job.claims });
+
+    // slash + reputation: the real before/after reputation and a real txId
+    const slashEvents = events.filter((event) => event.step === 'slash');
+    expect(slashEvents.length).toBeGreaterThan(0);
+    const reputationEvents = events.filter(
+      (event): event is LoopEvent & SettlementLoopEvent => event.step === 'reputation',
+    );
+    const confirmedReputation = reputationEvents.find(
+      (event) => event.progress.phase === 'reputation-confirmed',
+    );
+    expect(confirmedReputation).toBeDefined();
+    expect(confirmedReputation?.before).toEqual({ score: 80, jobs: 3, slashes: 0, bondHbar: 50 });
+    if (confirmedReputation?.progress.phase === 'reputation-confirmed') {
+      expect(confirmedReputation.progress.reputation.score).toBeLessThan(80);
+      expect(confirmedReputation.progress.reputation.slashes).toBe(1);
+    }
+  });
+
+  it("register()'s progress reports one RegisterLoopEvent per phase, matching onRegisterProgress's own ticks exactly (built once, forwarded to both, not twice)", async () => {
+    const events: LoopEvent[] = [];
+    const registerTicks: RegisterProgress[] = [];
+    const registry = new FakeRegistryPort();
+    const payments = new FakePaymentsPort();
+    const graph = new FakeGraphPort();
+    const capabilities = createCapabilityRegistry();
+    capabilities.register(echoCapability);
+    const node = createAssayNode({
+      registry,
+      payments,
+      graph,
+      capabilities,
+      onRegisterProgress: (progress) => registerTicks.push(progress),
+      onLoopEvent: (event) => { events.push(event); },
+    });
+
+    const result = await node.register({ name: 'events-register.assay.eth', manifest: registerManifestInput, bondHbar: 50 });
+
+    const registerEvents = events.filter((event): event is Extract<LoopEvent, { step: 'register' }> => event.step === 'register');
+    expect(registerEvents.map((event) => event.progress)).toEqual(registerTicks);
+    expect(registerTicks.map((tick) => tick.phase)).toEqual([
+      'posting-bond',
+      'publishing-manifest',
+      'initializing-reputation',
+      'done',
+    ]);
+    expect(registerEvents.at(-1)?.progress).toMatchObject({ phase: 'done', result });
+  });
+
+  it("payAndCall declining still emits the 'assessed' phase naming the decision, and never reaches 'paid'", async () => {
+    const events: LoopEvent[] = [];
+    const { node } = buildNode(undefined, { jobs: 4, slashes: 2, bondHbar: 50 }, (event) => { events.push(event); });
+
+    await expect(node.payAndCall(PROVIDER_NAME, 'echo', 'hello')).rejects.toThrow(PayDeclinedError);
+
+    const payEvents = events.filter((event) => event.step === 'pay');
+    expect(payEvents).toHaveLength(1);
+    expect(payEvents[0]).toMatchObject({ phase: 'assessed', decision: { pay: false } });
+  });
+
+  it("serve() emits a 'failed' ServeLoopEvent when the job store rejects a re-served payment, while pay itself still reports 'confirmed'", async () => {
+    const events: LoopEvent[] = [];
+    const { node } = buildNode(undefined, {}, (event) => { events.push(event); });
+
+    const { job: firstJob } = await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+    events.length = 0;
+
+    await expect(
+      node.serve({ provider: PROVIDER_NAME, capabilityId: 'echo', request: 'hello', txId: firstJob.paymentTx }),
+    ).rejects.toThrow(/already funded job/);
+
+    expect(events).toContainEqual(expect.objectContaining({ step: 'pay', phase: 'confirmed', txId: firstJob.paymentTx }));
+    const failedServe = events.find((event) => event.step === 'serve');
+    expect(failedServe).toMatchObject({
+      step: 'serve',
+      outcome: 'failed',
+      provider: PROVIDER_NAME,
+      capabilityId: 'echo',
+      txId: firstJob.paymentTx,
+    });
+    expect(events.some((event) => event.step === 'accept')).toBe(false);
+  });
+
+  it("serve() emits 'not-confirmed' when the payment never confirms, and never reaches serve/accept", async () => {
+    const events: LoopEvent[] = [];
+    const { node, payments } = buildNode({ confirmedTxIds: [] }, {}, (event) => { events.push(event); });
+    const { txId } = await payments.pay(5, hashRequestForTest('echo', 'hello'));
+    events.length = 0;
+
+    await expect(
+      node.serve({ provider: PROVIDER_NAME, capabilityId: 'echo', request: 'hello', txId }),
+    ).rejects.toThrow(PaymentNotConfirmedError);
+
+    expect(events.map((event) => (event.step === 'pay' ? event.phase : event.step))).toEqual([
+      'confirming',
+      'not-confirmed',
+    ]);
+    expect(events.some((event) => event.step === 'serve' || event.step === 'accept')).toBe(false);
+  });
+
+  it("discover() emits a 'failed' DiscoverLoopEvent, carrying the real error, for an unresolvable provider name", async () => {
+    const events: LoopEvent[] = [];
+    const { node } = buildNode(undefined, {}, (event) => { events.push(event); });
+
+    await expect(node.discover('no-such-provider.assay.eth')).rejects.toThrow();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ step: 'discover', outcome: 'failed', name: 'no-such-provider.assay.eth' });
+    if (events[0].step === 'discover' && events[0].outcome === 'failed') {
+      expect(events[0].error).toBeInstanceOf(Error);
+    }
+  });
+
+  it('a synchronously throwing onLoopEvent never breaks a full happy-path run: register, payAndCall, challenge, and settle all complete normally', async () => {
+    const registry = new FakeRegistryPort();
+    const payments = new FakePaymentsPort();
+    const graph = new FakeGraphPort();
+    const capabilities = createCapabilityRegistry();
+    capabilities.register(makeEchoCapability(async () => ({ valid: true })));
+
+    let eventCount = 0;
+    const node = createAssayNode({
+      registry,
+      payments,
+      graph,
+      capabilities,
+      challengerAccountId: CHALLENGER_ACCOUNT_ID,
+      onLoopEvent: () => {
+        eventCount += 1;
+        throw new Error('narration is broken, on purpose, on every single event');
+      },
+    });
+
+    const registerResult = await node.register({
+      name: 'throwing-emitter.assay.eth',
+      manifest: registerManifestInput,
+      bondHbar: 50,
+    });
+    expect(registerResult.reputation).toEqual({ score: 0, jobs: 0, slashes: 0, bondHbar: 50 });
+
+    const { job } = await node.payAndCall('throwing-emitter.assay.eth', 'echo', 'hello');
+    expect(job.status).toBe('served');
+
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+    const settled = await node.settle(job.jobId, verdict);
+    expect(settled.status).toBe('settled');
+
+    // proof the throwing hook was actually invoked throughout, not skipped
+    expect(eventCount).toBeGreaterThan(5);
+  });
+
+  it('an onLoopEvent that returns a rejecting promise on every event never breaks a full happy-path run (and never surfaces as an unhandled rejection)', async () => {
+    const registry = new FakeRegistryPort().seed(PROVIDER_NAME, seedRecord);
+    const payments = new FakePaymentsPort();
+    const graph = new FakeGraphPort();
+    const capabilities = createCapabilityRegistry();
+    capabilities.register(makeEchoCapability(async () => ({ valid: true })));
+
+    let eventCount = 0;
+    const node = createAssayNode({
+      registry,
+      payments,
+      graph,
+      capabilities,
+      onLoopEvent: async () => {
+        eventCount += 1;
+        throw new Error('async narration is broken, on purpose, on every single event');
+      },
+    });
+
+    const { job } = await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+    expect(job.status).toBe('served');
+
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+    expect(verdict).toEqual({ valid: true });
+
+    expect(eventCount).toBeGreaterThan(3);
+  });
+
+  it('createEventStamper: a shared stamper gives two independent LoopEvent sources one strictly increasing seq, not two separately-numbered ones', async () => {
+    const stamp = createEventStamper();
+    const events: LoopEvent[] = [];
+
+    const registry = new FakeRegistryPort().seed(PROVIDER_NAME, seedRecord);
+    const payments = new FakePaymentsPort();
+    const graph = new FakeGraphPort();
+    const capabilities = createCapabilityRegistry();
+    capabilities.register(echoCapability);
+    const node = createAssayNode({
+      registry,
+      payments,
+      graph,
+      capabilities,
+      eventStamper: stamp,
+      onLoopEvent: (event) => { events.push(event); },
+    });
+
+    await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+
+    // A composition root synthesizing its own event (e.g. apps/mcp's rate(),
+    // which lives entirely outside AssayNode) stamps with the very same
+    // function, sharing the one counter rather than starting a fresh one.
+    const synthetic = stamp({ step: 'discover', outcome: 'ok', name: PROVIDER_NAME, provider: await node.discover(PROVIDER_NAME) });
+    events.push(synthetic);
+
+    const seqs = events.map((event) => event.seq);
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+    expect(new Set(seqs).size).toBe(seqs.length);
+    // the synthetic event's seq continues the same counter, not a fresh one
+    expect(synthetic.seq).toBe(Math.max(...seqs.slice(0, -1)) + 1);
+  });
+
+  it('seq is monotonically increasing and at is a real timestamp by default, with no eventStamper configured', async () => {
+    const events: LoopEvent[] = [];
+    const { node } = buildNode(undefined, {}, (event) => { events.push(event); });
+
+    await node.payAndCall(PROVIDER_NAME, 'echo', 'hello');
+
+    expect(events.length).toBeGreaterThan(1);
+    for (let i = 1; i < events.length; i += 1) {
+      expect(events[i].seq).toBe(events[i - 1].seq + 1);
+      expect(events[i].at).toBeGreaterThanOrEqual(events[i - 1].at);
+    }
   });
 });
