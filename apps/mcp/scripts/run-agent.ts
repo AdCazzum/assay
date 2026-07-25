@@ -56,8 +56,13 @@ const ENTRY_POINT: Record<Target, string> = {
   'bad-provider': 'src/demo/serve-bad-provider.ts',
 };
 
+// Matches `agent/prompt.md`'s literal tool list (issue #94's mission
+// prompt): `list_providers`/`verify_claim`/`get_job`/`list_jobs` joined the
+// original four once #84 shipped them. `register_provider` is deliberately
+// left out -- the mission never asks the agent to register anything.
 const ALLOWED_TOOLS =
-  'mcp__assay__discover mcp__assay__pay_and_call mcp__assay__challenge mcp__assay__rate';
+  'mcp__assay__list_providers mcp__assay__discover mcp__assay__pay_and_call mcp__assay__verify_claim ' +
+  'mcp__assay__challenge mcp__assay__rate mcp__assay__get_job mcp__assay__list_jobs';
 
 type CliOptions = {
   target: Target;
