@@ -84,14 +84,23 @@ and overwrite the demo's manifest. That has already happened once during develop
 # blue-chip control, expect a low score
 pnpm --filter @assay/cap-rugscore smoke 0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48
 
-# a real thin token, expect 100
+# a real thin token, expect ~100 (see note below on why this drifts)
 pnpm --filter @assay/cap-rugscore smoke 0xd6c68bc8c862722e140e7b339ddf8a144a7d3530
 
 # the verifier: an honest result passes, a tampered claim is caught by name
 pnpm --filter @assay/cap-rugscore verify-smoke
 ```
 
-For reference, both queried at the same block:
+GOODCAT's score is not stable across runs. Its `ageBlocks` is `currentBlock -
+createdAtBlockNumber`, computed live every time, and `scoring.ts`'s age signal gives a
+non-zero (if tiny) safety credit as that count grows toward `MATURE_AGE_BLOCKS` (200,000
+blocks). At the table below's block, that credit rounded away and GOODCAT hit the ceiling of
+100; a few thousand blocks later (about an hour) it had already drifted to 99, and it will
+keep drifting down by roughly a point every ~10,000 blocks from here. **Treat anything in the
+high-90s as a pass**, not just exactly 100; the top row (USDC) is unaffected because its age
+signal is already pinned at its floor.
+
+For reference, both queried at the same block (captured once; USDC's row is stable, GOODCAT's is not, see above):
 
 | token | score | liquidity | age | txs | top-pool concentration |
 |---|---|---|---|---|---|
