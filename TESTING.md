@@ -32,7 +32,7 @@ instead. Set `HEDERA_KEY_TYPE=ecdsa` if you are unsure. See `FEEDBACK.md`.
 pnpm -r typecheck && pnpm -r test
 ```
 
-284 tests across 9 packages. No network, no credentials. If this is red, stop here.
+288 tests across 9 packages. No network, no credentials. If this is red, stop here.
 
 ## Level 1 — the narration, offline
 
@@ -141,9 +141,9 @@ pnpm --filter @assay/watchdog exec tsx src/index.ts honest   # challenge fails, 
 rigged: a verifier that always returns FALSE proves nothing about verification. Same code
 path, outcome decided by the verifier.
 
-About 24s each. They target `liar.assay.eth`, not the good provider, so rehearsing the
-climax does not damage the record the demo's opening depends on. Override with
-`WATCHDOG_PROVIDER_NAME` if you need to.
+19 to 43s each (the spread is the point, not the median: see `docs/demo-run-sheet.md`). They
+target `liar.assay.eth`, not the good provider, so rehearsing the climax does not damage the
+record the demo's opening depends on. Override with `WATCHDOG_PROVIDER_NAME` if you need to.
 
 ## Level 6 — the real requester agent
 
@@ -172,9 +172,10 @@ land in `apps/mcp/agent/transcripts/` and previous ones are committed.
 pnpm --filter @assay/registry exec tsx scripts/reset-demo-state.ts
 ```
 
-Takes ~25s and must end with `read-back matches target: OK`. Reputation records are real, so
-every rehearsal changes them; without a reset the agent correctly declines to pay and the
-demo's opening beat cannot happen. Do not run it on stage.
+Takes ~57s (two providers, two real bonds, four ENS writes) and must end with `read-back
+matches target: OK`. Reputation records are real, so every rehearsal changes them; without a
+reset the agent correctly declines to pay and the demo's opening beat cannot happen. Do not
+run it on stage.
 
 `docs/demo-run-sheet.md` has the full checklist and the measured timings the running order
 is built on.
@@ -211,12 +212,23 @@ with a Sepolia RPC in `.env`:
 
 ```bash
 pnpm --filter @assay/registry exec node --input-type=module -e '
+import { config as loadEnv } from "dotenv";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+const here = dirname(fileURLToPath(import.meta.url));
+loadEnv({ path: join(here, "..", "..", ".env") });
 import { ethers } from "ethers";
 const p = new ethers.JsonRpcProvider(process.env.SEPOLIA_RPC_URL);
 const r = await p.getResolver("rugscore.assay.eth");
 console.log(await r.getText("assay:manifest"));
 console.log(await r.getText("assay:rep"));'
 ```
+
+The explicit `loadEnv` is not decoration: `pnpm --filter exec` runs this with the package
+directory as `cwd`, not the repo root, so `.env` at the repo root is otherwise invisible to
+`process.env` and `ethers.JsonRpcProvider(undefined)` silently falls back to a local RPC on
+`127.0.0.1:8545`, which fails with a confusing `ECONNREFUSED` that looks like a Sepolia
+connectivity problem instead of a missing env var.
 
 Note that `assay.eth` and its subnames resolve through a wildcard resolver, so the subnames
 have no entry in the ENS registry at all. Querying `owner()` for `rugscore.assay.eth` returns
