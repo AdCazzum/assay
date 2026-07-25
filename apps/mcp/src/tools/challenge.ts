@@ -9,7 +9,7 @@ const inputSchema = {
     .string()
     .min(1)
     .describe(
-      'The `k` of the specific claim to dispute, e.g. "hasActiveMintRole". Must be one of the ' +
+      'The `k` of the specific claim to dispute, e.g. "liquidityUsd". Must be one of the ' +
         'keys in that job\'s claims.',
     ),
 };
