@@ -24,7 +24,32 @@ importers:
         specifier: ^2.1.9
         version: 2.1.9(@types/node@22.20.1)(terser@5.49.0)
 
-  apps/dashboard: {}
+  apps/dashboard:
+    dependencies:
+      '@assay/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+
+  apps/demo:
+    dependencies:
+      '@assay/cap-rugscore':
+        specifier: workspace:*
+        version: link:../../packages/cap-rugscore
+      '@assay/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@assay/dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
+      '@assay/graph':
+        specifier: workspace:*
+        version: link:../../packages/graph
+      '@assay/payments':
+        specifier: workspace:*
+        version: link:../../packages/payments
+      '@assay/registry':
+        specifier: workspace:*
+        version: link:../../packages/registry
 
   apps/mcp:
     dependencies:
