@@ -18,6 +18,12 @@ build/
 # generated at run time by apps/mcp/scripts/run-agent.ts, never hand-edited or committed
 apps/mcp/agent/.mcp-config.*.generated.json
 
+# apps/demo's scenic runner captures every live run here (issues #93/#94);
+# most are rehearsal scratch, not meant to pile up in git. One canonical
+# capture is force-added as the offline-rehearsal fallback -- see
+# docs/demo-run-sheet.md.
+apps/demo/captures/*.scenic.ndjson
+
 # editor / agent local state
 .emdash/
 .claude/settings.local.json
