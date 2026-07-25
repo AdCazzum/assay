@@ -126,10 +126,11 @@ Worth knowing before believing any "instant" claim about either chain:
 |---|---|
 | Hedera payment, submit to mirror-node confirmed | **~4.1s** |
 | Hedera slash, transfer alone | **~0.4s** |
-| ENS text-record write, 7 samples | **12.4s to 24.6s**, median ~16.4s |
+| ENS text-record write, samples across two rehearsals | **8.3s to 24.6s**, median ~13s |
 
 The ENS spread is wide and does not converge, which matters more to a demo run sheet than
-the median does. See `docs/demo-run-sheet.md`.
+the median does; a later rehearsal pushed the low end down from 12.4s to 8.3s, which widens
+the range rather than narrowing it. See `docs/demo-run-sheet.md`.
 
 ## Reproducing this
 
