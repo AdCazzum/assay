@@ -13,6 +13,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@assay/cap-rugscore": "workspace:*",
     "@assay/core": "workspace:*",
     "@assay/payments": "workspace:*",
     "ethers": "^6.17.0"

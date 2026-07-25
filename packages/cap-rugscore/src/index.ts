@@ -22,6 +22,13 @@ export type { NumericTolerance, RugScoreTolerances } from './tolerances.js';
 export { ClaimVerificationUnavailableError } from './errors.js';
 
 /**
+ * The manifest's `verifierHash` (SPEC.md §5): a real commitment to the code
+ * that adjudicates a challenge, so a provider cannot publish a strict verifier,
+ * take payment, then relax it.
+ */
+export { computeVerifierHash, VERIFIER_SOURCE_FILES } from './verifier-hash.js';
+
+/**
  * Re-exported test harness (SPEC.md §11: declared honestly, never mistaken
  * for `createRugScoreCapability`). `apps/watchdog` (#28) and the demo import
  * it from here rather than reaching into `test-support/` directly.

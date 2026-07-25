@@ -114,6 +114,9 @@ importers:
 
   packages/registry:
     dependencies:
+      '@assay/cap-rugscore':
+        specifier: workspace:*
+        version: link:../cap-rugscore
       '@assay/core':
         specifier: workspace:*
         version: link:../core
