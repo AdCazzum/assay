@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createJobStore,
+  DuplicatePaymentTxError,
   IllegalJobTransitionError,
   UnknownJobError,
   type JobStore,
@@ -9,12 +10,15 @@ import type { Claim } from './types.js';
 
 const claims: Claim[] = [{ k: 'hasActiveMintRole', v: false, atBlock: 42 }];
 
-function seedJob(store: JobStore) {
+/** `paymentTx` defaults to a fresh value per call, since a store rejects reusing one (see `DuplicatePaymentTxError`). */
+let paymentTxSeq = 0;
+function seedJob(store: JobStore, paymentTx?: string) {
+  paymentTxSeq += 1;
   return store.create({
     provider: 'rugscore.assay.eth',
     capabilityId: 'rugscore',
     request: '0xTOKEN',
-    paymentTx: '0xpay1',
+    paymentTx: paymentTx ?? `0xpay${paymentTxSeq}`,
     result: { score: 12 },
     claims,
   });
@@ -133,6 +137,32 @@ describe('createJobStore', () => {
     fetched.status = 'slashed';
 
     expect(store.get(job.jobId).status).toBe('served');
+  });
+
+  it('rejects create() when paymentTx was already consumed by a prior job in this store (hedera-F1: a payment funds exactly one job)', () => {
+    const store = createJobStore();
+    const first = seedJob(store, '0xsame-payment');
+
+    expect(() => seedJob(store, '0xsame-payment')).toThrow(DuplicatePaymentTxError);
+    try {
+      seedJob(store, '0xsame-payment');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(DuplicatePaymentTxError);
+      const e = err as DuplicatePaymentTxError;
+      expect(e.txId).toBe('0xsame-payment');
+      expect(e.existingJobId).toBe(first.jobId);
+    }
+    // the rejected attempt did not create a second job
+    expect(store.list()).toHaveLength(1);
+  });
+
+  it('a different store instance has its own paymentTx index: the same txId is fine in a fresh store', () => {
+    const storeA = createJobStore();
+    const storeB = createJobStore();
+
+    seedJob(storeA, '0xshared-tx');
+    expect(() => seedJob(storeB, '0xshared-tx')).not.toThrow();
   });
 
   it('lists every job created in that store, and each store instance is independent', () => {

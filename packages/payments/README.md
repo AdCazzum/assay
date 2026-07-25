@@ -59,6 +59,20 @@ by default.
   through an `onAttempt`/`onConfirmAttempt` callback (attempt number, elapsed
   ms, state), which is how `scripts/spike.ts` prints the settle time the
   demo's "sub-second settlement" claim rests on.
+- `confirmPayment({ txId, expectedAmountHbar, expectedMemo })` — what
+  `@assay/core`'s `serve()` actually calls the payment gate through now
+  (issue hedera-F1). `confirm(txId)` above only ever checked
+  `result === "SUCCESS"`: any confirmed txId, for any amount, to any account,
+  with any memo — including one already spent on a prior job — used to unlock
+  a capability run. `confirmPayment` re-reads the same mirror node
+  transaction and additionally checks that `payToAccountId` (this instance's
+  own configured recipient, see below) received at least
+  `expectedAmountHbar`, and that the transaction's memo equals `expectedMemo`.
+  It is optional on `PaymentsPort` so a port that has not adopted it still
+  type-checks; `serve()` falls back to plain `confirm()` when it is absent.
+  The job store also now rejects reusing a `paymentTx` across two jobs
+  (`DuplicatePaymentTxError`, `@assay/core`'s `job-store.ts`), closing the
+  replay path even for a port that never upgrades to `confirmPayment`.
 - `postBond(amountHbar)` / `slash(bondRef, toChallenger)` — literally "a
   deposit and a transfer" per the issue and SPEC.md §17 (no staking protocol).
   `postBond` transfers to a configured `bondAccountId` and returns a `bondRef`
@@ -105,8 +119,11 @@ The round trip ran against Hedera testnet on 2026-07-24, operator `0.0.9695801`:
 ```
 
 Verified on the mirror node: `result=SUCCESS`, memo decodes to
-`spike-1784929790998` (so the requestHash really is bound to the payment, which
-is what payment-gating rests on), fee 0.0014 HBAR.
+`spike-1784929790998`, fee 0.0014 HBAR. At the time this line was first
+written, the requestHash-in-memo binding was only checked by eye against
+HashScan here — nothing in the code read the memo back, so it did not
+actually gate anything (issue hedera-F1). `confirmPayment` (see the Design
+section above) is what makes it a real, code-enforced check.
 
 **Settlement took 4.1s wall clock**, of which consensus is roughly 3s and the
 rest is mirror-node ingestion lag. The 15s default poll timeout has ~4x

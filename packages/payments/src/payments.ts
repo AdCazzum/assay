@@ -14,12 +14,22 @@
  * intentionally just enough bookkeeping for "deposit, then transfer" — it is
  * not durable and does not survive a process restart, matching the "no
  * persistence beyond the in-memory job store" scope cut.
+ *
+ * `confirm(txId)` only ever checked the mirror node's `result` field (SUCCESS
+ * or not) — nothing about who was paid, how much, or the memo. That was the
+ * whole payment gate `@assay/core`'s `serve()` relied on, so any confirmed
+ * txId, including an already-spent one, unlocked any capability run
+ * regardless of price (hedera-F1). `confirmPayment` closes that: it re-reads
+ * the same mirror node transaction and additionally checks that
+ * `payToAccountId` (this instance's own configured recipient) actually
+ * received at least the expected amount, and that the memo matches the
+ * request it is supposed to be bound to.
  */
 
-import type { PaymentsPort } from '@assay/core';
+import type { PaymentConfirmation, PaymentsPort } from '@assay/core';
 import type { HederaTransferClient } from './hedera-client.js';
 import type { FetchLike, MirrorNodePollAttempt } from './mirror-node.js';
-import { pollMirrorNode } from './mirror-node.js';
+import { pollMirrorNode, pollMirrorNodeTransaction, TINYBARS_PER_HBAR } from './mirror-node.js';
 
 export type HederaPaymentsPortConfig = {
   /** Injected so tests can drive a `FakeHederaTransferClient` (see hedera-client tests). */
@@ -63,6 +73,39 @@ export function createHederaPaymentsPort(config: HederaPaymentsPortConfig): Paym
         intervalMs: config.confirmIntervalMs,
         onAttempt: config.onConfirmAttempt,
       });
+    },
+
+    async confirmPayment({ txId, expectedAmountHbar, expectedMemo }): Promise<PaymentConfirmation> {
+      const detail = await pollMirrorNodeTransaction(txId, {
+        baseUrl: config.mirrorNodeBaseUrl,
+        fetchImpl: config.fetchImpl,
+        timeoutMs: config.confirmTimeoutMs,
+        intervalMs: config.confirmIntervalMs,
+        onAttempt: config.onConfirmAttempt,
+      });
+
+      if (detail.state !== 'success') {
+        return { confirmed: false, reason: 'unsuccessful' };
+      }
+
+      // The recipient this instance itself pays (config.payToAccountId,
+      // bound at construction, see the module doc comment on why `pay()`
+      // has no recipient parameter) must actually be credited at least the
+      // expected amount. Rounding to the nearest tinybar avoids float noise
+      // from `amountHbar` values like 0.01 or 5.
+      const expectedTinybars = Math.round(expectedAmountHbar * TINYBARS_PER_HBAR);
+      const receivedTinybars = detail.transfers
+        .filter((t) => t.accountId === config.payToAccountId)
+        .reduce((sum, t) => sum + t.amountTinybars, 0);
+      if (receivedTinybars < expectedTinybars) {
+        return { confirmed: false, reason: 'amount-too-low' };
+      }
+
+      if (detail.memo !== expectedMemo) {
+        return { confirmed: false, reason: 'memo-mismatch' };
+      }
+
+      return { confirmed: true };
     },
 
     async postBond(amountHbar) {

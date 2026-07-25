@@ -32,11 +32,26 @@ import type { CapabilityRegistry } from './runtime.js';
 import type { Job, JobStatus, Manifest, ProviderRecord, Reputation, Verdict } from './types.js';
 
 /**
- * Thrown by `serve()` when `payments.confirm(txId)` does not return `true`.
- * This is the only reason a `Job` fails to be created after a payment was
- * attempted: SPEC.md §12 forbids serving on an unconfirmed or failed
- * payment, and `serve()` checks `confirm()` itself, unconditionally, before
- * running the capability or touching the job store.
+ * Thrown by `serve()` when the payment does not check out. SPEC.md §12
+ * forbids serving on an unconfirmed or failed payment, and `serve()` checks
+ * this itself, unconditionally, before running the capability or touching
+ * the job store.
+ *
+ * What "checks out" means depends on what `payments` (the `PaymentsPort`)
+ * implements: if it has `confirmPayment`, this fires when the transaction
+ * never finalized as SUCCESS, when the confirmed amount was below
+ * `manifest.priceHbar`, or when its memo did not match this exact
+ * `capabilityId`/`request` (closing hedera-F1: previously any SUCCESS txId,
+ * for any amount, memo, or recipient — even one already spent on a prior job
+ * — unlocked `serve()`). If `payments` only implements the older, bare
+ * `confirm(txId)`, this fires only when that returns `false`, same as before
+ * this fix — that narrower gate is a known, disclosed limitation of a
+ * `PaymentsPort` that has not adopted `confirmPayment` yet, not something
+ * this error hides.
+ *
+ * A payment transaction id being reused against a second job is a separate
+ * failure, `DuplicatePaymentTxError` from the job store (see `job-store.ts`),
+ * thrown after this check passes.
  */
 export class PaymentNotConfirmedError extends Error {
   readonly txId: string;
@@ -544,11 +559,18 @@ export interface AssayNode {
   payAndCall(name: string, capabilityId: string, request: unknown): Promise<PayAndCallResult>;
   /**
    * The payment gate (SPEC.md §12), and the only way a `Job` reaches
-   * `served`. Structurally impossible to bypass: this function checks
-   * `payments.confirm(txId)` itself, unconditionally, before touching the
-   * capability runtime or the job store — regardless of what the caller
-   * already believes about the payment, and regardless of whether it was
-   * reached via `payAndCall` or called directly.
+   * `served`. Structurally impossible to bypass: this function checks the
+   * payment itself, unconditionally, before touching the capability runtime
+   * or the job store — regardless of what the caller already believes about
+   * the payment, and regardless of whether it was reached via `payAndCall`
+   * or called directly. When `payments` implements `confirmPayment`, "checks
+   * the payment" means the confirmed transaction actually paid at least
+   * `manifest.priceHbar` to the provider's own account with a memo bound to
+   * this exact `capabilityId`/`request` (see `PaymentNotConfirmedError`'s doc
+   * comment); with only bare `confirm()`, it means the transaction merely
+   * finalized as SUCCESS. Either way, a `txId` already spent on a prior job
+   * is rejected by the job store (`DuplicatePaymentTxError`), so no
+   * confirmed payment can fund two jobs.
    */
   serve(input: ServeInput): Promise<Job>;
   /** The job store backing this node. `challenge()`/`settle()` move jobs past `served` through it. */
@@ -617,9 +639,15 @@ export interface AssayNode {
 }
 
 /**
- * Binds a payment to the request it pays for, so a payment cannot be replayed
- * against a different call. Deterministic and dependency-free: `node:crypto`
- * is a Node builtin, not a new package dependency.
+ * Binds a payment to the request it pays for: `payAndCall` writes this into
+ * the payment's memo (via `payments.pay(amountHbar, requestHash)`), and
+ * `serve()` below recomputes the same hash from `input.capabilityId`/
+ * `input.request` and checks it against the memo `payments.confirmPayment`
+ * reads back off the mirror node, so a confirmed payment can only unlock the
+ * exact call it was made for (hedera-F1: this binding used to be written but
+ * never read back, so it bound nothing at runtime). Deterministic and
+ * dependency-free: `node:crypto` is a Node builtin, not a new package
+ * dependency.
  */
 function hashRequest(capabilityId: string, request: unknown): string {
   return createHash('sha256').update(JSON.stringify({ capabilityId, request })).digest('hex');
@@ -645,11 +673,35 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
   const settlingJobIds = new Set<string>();
 
   async function serve(input: ServeInput): Promise<Job> {
-    const confirmed = await payments.confirm(input.txId);
-    if (!confirmed) {
-      throw new PaymentNotConfirmedError(input.txId);
+    // Prefer the strict gate when the port supports it: it checks the
+    // confirmed transaction actually paid this capability's real price, to
+    // the provider's own configured account, with a memo bound to this exact
+    // request (hedera-F1). A port that only implements bare `confirm()`
+    // falls back to the pre-existing, weaker SUCCESS-only check — see
+    // `PaymentNotConfirmedError`'s doc comment for why that gap is disclosed,
+    // not hidden.
+    if (payments.confirmPayment) {
+      const provider = await registry.resolveProvider(input.provider);
+      const expectedMemo = hashRequest(input.capabilityId, input.request);
+      const confirmation = await payments.confirmPayment({
+        txId: input.txId,
+        expectedAmountHbar: provider.manifest.priceHbar,
+        expectedMemo,
+      });
+      if (!confirmation.confirmed) {
+        throw new PaymentNotConfirmedError(input.txId);
+      }
+    } else {
+      const confirmed = await payments.confirm(input.txId);
+      if (!confirmed) {
+        throw new PaymentNotConfirmedError(input.txId);
+      }
     }
+
     const { result, claims } = await capabilities.run(input.capabilityId, input.request);
+    // `jobs.create` itself rejects a `txId` already spent on a prior job
+    // (`DuplicatePaymentTxError`), closing the replay path regardless of
+    // which confirmation branch above ran.
     return jobs.create({
       provider: input.provider,
       capabilityId: input.capabilityId,
