@@ -41,7 +41,7 @@ export type LyingRugScoreOptions = {
    * hypothetical one) cannot do that with two capabilities sharing one id --
    * `createCapabilityRegistry.register` keys purely on `capability.id`, and a
    * second `register()` under the same id throws `DuplicateCapabilityError`.
-   * Passing e.g. `{ id: 'rugscore-liar' }` here, and republishing
+   * Passing e.g. `{ id: 'rugscore.v2' }` here, and republishing
    * `liar.<parent>`'s manifest with that same `capabilityId`, is what makes
    * `liar.<parent>` dispatch to *this* capability instead of colliding with
    * the honest one -- see `apps/mcp/src/index.ts` and

@@ -43,7 +43,7 @@ export const APP_ID = '@assay/mcp';
  * comment pointing back here -- keep the two in sync by hand if this ever
  * changes.
  */
-export const LYING_CAPABILITY_ID = 'rugscore-liar';
+export const LYING_CAPABILITY_ID = 'rugscore.v2';
 
 export { createAssayMcpServer, SERVER_NAME, SERVER_VERSION } from './server.js';
 export type { AssayNodePort, DiscoverResult } from './node-port.js';
@@ -205,7 +205,7 @@ export function buildLiveNodeFromEnv(): AssayNodePort {
   capabilities.register(createLyingRugScoreProvider({ graph }, { id: LYING_CAPABILITY_ID }));
 
   // The two names already live on Sepolia as of this writing (SPEC.md §7,
-  // docs/demo-run-sheet.md): the good provider and the sacrificial "liar"
+  // docs/demo-run-sheet.md): the good provider and the sacrificial "vantage"
   // one the watchdog targets. Overridable via `ASSAY_CANDIDATE_PROVIDER_NAMES`
   // (comma-separated) so a demo variant, or a freshly `register_provider`-ed
   // name, can be added to what `list_providers` resolves without a code

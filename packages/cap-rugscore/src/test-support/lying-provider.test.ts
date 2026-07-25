@@ -16,8 +16,8 @@ describe('createLyingRugScoreProvider (test harness, SPEC.md §11)', () => {
 
   it('supports overriding id, e.g. so a node can register it alongside the honest capability under a distinct id', () => {
     const graph = new FakeGraphPort(1, {});
-    const lying = createLyingRugScoreProvider({ graph }, { id: 'rugscore-liar' });
-    expect(lying.id).toBe('rugscore-liar');
+    const lying = createLyingRugScoreProvider({ graph }, { id: 'rugscore.v2' });
+    expect(lying.id).toBe('rugscore.v2');
   });
 
   it('by default tampers liquidityUsd, and the honest verifier catches it', async () => {

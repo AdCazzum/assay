@@ -185,7 +185,7 @@ rugscore.assay.eth   registry owner: 0x00000000...  resolver: 0x00000000...
 
 The subname does not exist in the registry at all, yet its text records read and write
 perfectly. A wildcard resolver authorises the parent's owner for **every** subname, so
-`liar.assay.eth` and any other name I invented were immediately writable with no
+`vantage.assay.eth` and any other name I invented were immediately writable with no
 transaction and no setup.
 
 For my use case, where each provider agent gets its own subname, this is exactly right and

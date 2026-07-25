@@ -132,7 +132,7 @@ const DEMO_DESCRIPTION =
  * live lie behind it to catch, only a rehearsed transcript of one (verified
  * by reading `apps/mcp/src/index.ts` and this file directly, not assumed).
  */
-const LYING_CAPABILITY_ID = 'rugscore-liar';
+const LYING_CAPABILITY_ID = 'rugscore.v2';
 
 const HASHSCAN_BASE_URL: Record<HederaNetwork, string> = {
   testnet: 'https://hashscan.io/testnet',
@@ -179,7 +179,7 @@ async function resetProvider(opts: {
   endpoint: string;
   /**
    * Overrides the republished manifest's `capabilityId` (issues #93/#94).
-   * Only the sacrificial ("liar") role passes this, and only as
+   * Only the sacrificial ("vantage") role passes this, and only as
    * `LYING_CAPABILITY_ID`: without it, this function's default behaviour
    * (spreading `...before.manifest`, see below) would keep whatever
    * `capabilityId` is already on-chain, which is `'rugscore'` -- the honest
@@ -253,7 +253,7 @@ async function main(): Promise<void> {
   const sepoliaPrivateKey = requireEnv('SEPOLIA_PRIVATE_KEY');
   const parentName = requireEnv('ENS_PARENT_NAME');
   const label = process.env.DEMO_PROVIDER_LABEL ?? 'rugscore';
-  const sacrificialLabel = process.env.WATCHDOG_PROVIDER_LABEL ?? 'liar';
+  const sacrificialLabel = process.env.WATCHDOG_PROVIDER_LABEL ?? 'vantage';
   const bondMultiple = Number(process.env.DEMO_BOND_MULTIPLE ?? String(DEFAULT_DEMO_BOND_MULTIPLE));
 
   // --- Hedera config (real bonds) ---
@@ -303,7 +303,7 @@ async function main(): Promise<void> {
     } else {
       sacrificialOk = await resetProvider({
         name: `${sacrificialLabel}.${parentName}`,
-        role: 'liar',
+        role: 'vantage',
         buildReputation: buildSacrificialReputation,
         capabilityId: LYING_CAPABILITY_ID,
         ...shared,
