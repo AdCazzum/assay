@@ -75,6 +75,12 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { config as loadEnv } from 'dotenv';
 import { createHederaPaymentsPort, createHederaSdkTransferClient, type HederaKeyType, type HederaNetwork } from '@assay/payments';
+// The capability owns its own verifier commitment (SPEC.md §5), so the hash is
+// computed there rather than pasted here. This crosses a package boundary that
+// `packages/registry/src/` must never cross, and only does so because this is
+// operator tooling: the same reason the script already reaches for
+// `@assay/payments` to post a real bond.
+import { computeVerifierHash } from '@assay/cap-rugscore';
 import { createEnsRegistry, type ReputationWriteProgress } from '../src/ens-registry.js';
 import { EnsRegistryError } from '../src/errors.js';
 import { buildDemoReputation, computeDemoBondHbar, DEFAULT_DEMO_BOND_MULTIPLE } from './demo-state.js';
@@ -87,6 +93,25 @@ const MIRROR_NODE_BASE_URL: Record<HederaNetwork, string> = {
   mainnet: 'https://mainnet-public.mirrornode.hedera.com',
   previewnet: 'https://previewnet.mirrornode.hedera.com',
 };
+
+/**
+ * Where `apps/provider` actually listens (`apps/provider/src/index.ts`:
+ * `PORT ?? 8787`, route `POST /serve`). Override with
+ * `DEMO_PROVIDER_ENDPOINT` when the provider runs somewhere else.
+ *
+ * This is localhost because the provider runs on the demo machine, which is
+ * honest: the manifest should say where the service really is, and a public
+ * URL we do not serve would be a worse lie than a loopback one.
+ */
+const DEFAULT_PROVIDER_ENDPOINT = 'http://localhost:8787/serve';
+
+/**
+ * Kept accurate rather than aspirational: the signals come from a block-pinned
+ * Uniswap v3 subgraph query through The Graph's gateway (#42), not the Token
+ * API the earlier text claimed (#49 replaced that path entirely).
+ */
+const DEMO_DESCRIPTION =
+  'Rug-pull risk score for an ERC-20 token, from block-pinned Uniswap v3 subgraph data via The Graph, verifiable at the claim block.';
 
 const HASHSCAN_BASE_URL: Record<HederaNetwork, string> = {
   testnet: 'https://hashscan.io/testnet',
@@ -176,10 +201,24 @@ async function main(): Promise<void> {
       throw new Error(`bond tx ${bondTxId} did not confirm via mirror node; refusing to write a reputation record backed by an unconfirmed bond.`);
     }
 
-    // 3. Point the manifest's bondRef at the bond just posted (real ENS write).
-    console.log('[reset-demo] publishing manifest with updated bondRef...');
+    // 3. Republish the manifest: point bondRef at the bond just posted, and
+    // replace the two fields that were carrying placeholders (#67). The
+    // manifest is a public on-chain record judges read directly, so
+    // `provider.example` and a verifierHash that hashes nothing are not
+    // cosmetic problems.
+    const endpoint = process.env.DEMO_PROVIDER_ENDPOINT ?? DEFAULT_PROVIDER_ENDPOINT;
+    const verifierHash = computeVerifierHash();
+    console.log(`[reset-demo] endpoint:     ${endpoint}`);
+    console.log(`[reset-demo] verifierHash: ${verifierHash} (sha256 over ${'rugscore.ts + tolerances.ts'})`);
+    console.log('[reset-demo] publishing manifest (bondRef, endpoint, verifierHash)...');
     const manifestStart = Date.now();
-    const { txHash: manifestTxHash } = await registry.publishManifest(name, { ...before.manifest, bondRef });
+    const { txHash: manifestTxHash } = await registry.publishManifest(name, {
+      ...before.manifest,
+      description: DEMO_DESCRIPTION,
+      bondRef,
+      endpoint,
+      verifierHash,
+    });
     console.log(`[reset-demo] manifest write confirmed in ${Date.now() - manifestStart}ms (tx ${manifestTxHash})`);
 
     // 4. Write the full absolute reputation target (real ENS write).

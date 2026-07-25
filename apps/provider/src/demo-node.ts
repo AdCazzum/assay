@@ -19,7 +19,7 @@ export const DEMO_PROVIDER_NAME = 'rugscore.assay.eth';
 
 export const DEMO_MANIFEST: Manifest = {
   capabilityId: 'rugscore',
-  description: 'Rug-pull risk score for an ERC-20 token, derived from The Graph Token API signals.',
+  description: 'Rug-pull risk score for an ERC-20 token, from block-pinned Uniswap v3 subgraph data via The Graph.',
   priceHbar: 5,
   endpoint: 'http://localhost:8787/serve',
   bondRef: 'demo-bond',
