@@ -40,10 +40,20 @@
  * `live-node.ts`'s synthetic `rate()` ones.
  */
 
+import { randomBytes } from 'node:crypto';
 import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { EnsWriteAttemptState } from '@assay/registry';
 import type { LoopEvent, LoopEventVariant } from '@assay/core';
+import {
+  advanceChain,
+  ANCHORED_STEPS,
+  ANCHOR_GENESIS,
+  ANCHOR_VERSION,
+  FINAL_ANCHOR_STEP,
+  RUN_LINE_KIND,
+  type LoopAnchorRecord,
+} from './loop-anchor.js';
 
 /**
  * The reputation-write heartbeat line (issue #93's companion wire): mirrors
@@ -101,6 +111,12 @@ export type LoopEventSink = {
    */
   sinkHeartbeat(body: SinkHeartbeatLine): void;
   /**
+   * The running SHA-256 chain over every line written so far (see
+   * `loop-anchor.ts`). Exposed for tests and for a caller that wants to print
+   * the digest a reader can check the file against.
+   */
+  chainHead(): string;
+  /**
    * Ends the underlying write stream. Safe to call even if the sink already
    * broke. `onFinish`, if given, fires once the stream has actually flushed
    * to disk (or immediately, if the sink never opened) -- `fs.createWriteStream`
@@ -135,13 +151,39 @@ type RawStamp = (body: Record<string, unknown>) => { at: number; seq: number };
  * `LoopEvent`s that same stamper produces (`sinkLoopEvent` itself does not
  * call `stamp` -- see its own doc comment -- only `sinkHeartbeat` does).
  */
+export type LoopEventSinkOptions = {
+  /**
+   * Receives an anchor whenever the chain head should be committed to
+   * consensus: on the first line of each value-moving or truth-settling step
+   * (`ANCHORED_STEPS`), and once more from `close()` for whatever came after
+   * the last of those. Wired to `createLoopAnchor(...).anchor` in `index.ts`;
+   * omitted, the sink still chains, it just publishes nothing — which is the
+   * right behaviour with no topic configured, and keeps every existing test
+   * and the offline dashboard replay working untouched.
+   */
+  onAnchor?(record: LoopAnchorRecord): void;
+};
+
 export function createLoopEventSink(
   path: string,
   stamp: (body: LoopEventVariant) => LoopEvent,
+  options: LoopEventSinkOptions = {},
 ): LoopEventSink {
+  const onAnchor = options.onAnchor;
   const rawStamp = stamp as unknown as RawStamp;
+  // Identifies this run in an append-only file that accumulates many. Random
+  // rather than a counter or a timestamp: two processes may append to the same
+  // file, and the id only has to be unique, never ordered.
+  const runId = randomBytes(8).toString('hex');
 
   let broken = false;
+  // Anchor state. `spanStart >= 0` doubles as "there are lines not yet
+  // covered by a published anchor", which is what tells `close()` whether a
+  // final anchor is owed.
+  let chain = ANCHOR_GENESIS;
+  let spanStart = -1;
+  let lastSeq = -1;
+  let lastAnchoredStep: string | undefined;
   let stream: WriteStream;
   try {
     // Create the parent directory rather than treating a missing one as a
@@ -174,13 +216,66 @@ export function createLoopEventSink(
     process.stderr.write(`[assay] loop-event sink writing to ${resolve(path)}\n`);
   }
 
+  // The run header, written before anything else so it is line one of this
+  // run's segment and therefore the first link in its chain. It is what lets
+  // `scripts/verify-anchors.ts` split an append-only log back into runs
+  // exactly, and pair each anchor with the segment it came from.
+  writeLine(rawStamp({ kind: RUN_LINE_KIND, run: runId }));
+
   function writeLine(line: Record<string, unknown>): void {
     if (broken) return;
+    const json = JSON.stringify(line);
+
+    // The chain advances in write order, which is the order the bytes reach
+    // the file, so it is computed here rather than in the callback below --
+    // a later synchronous write must not chain ahead of an earlier pending one.
+    const next = advanceChain(chain, json);
+    const seq = typeof line.seq === 'number' ? line.seq : lastSeq;
+    const step = typeof line.step === 'string' ? line.step : undefined;
+
+    // One anchor per entry into a step, not per event: `pay` alone emits a
+    // `confirming` line every mirror-node poll, and anchoring each would spend
+    // a consensus message per second of lag for no extra evidence.
+    const anchoring: LoopAnchorRecord | undefined =
+      onAnchor && step && ANCHORED_STEPS[step] === true && step !== lastAnchoredStep
+        ? {
+            v: ANCHOR_VERSION,
+            run: runId,
+            seq,
+            from: spanStart < 0 ? seq : spanStart,
+            step,
+            chain: next,
+          }
+        : undefined;
+
     try {
-      stream.write(`${JSON.stringify(line)}\n`);
+      // Publishing from the write callback, not straight after `write()`,
+      // is the difference between attesting bytes and attesting intent.
+      // `write()` returning does not mean the line landed: a stream whose
+      // fd never opened (ENOENT, permissions revoked mid-run, a full disk)
+      // buffers the chunk happily and only reports the failure on this
+      // callback, one tick later. An anchor published optimistically in that
+      // window commits to a line no verifier can ever read back, which shows
+      // up downstream as a chain mismatch -- indistinguishable from someone
+      // having edited the log. A missing anchor is an honest gap; a wrong one
+      // is an accusation.
+      stream.write(
+        `${json}\n`,
+        anchoring
+          ? (err) => {
+              if (!err && !broken) onAnchor?.(anchoring);
+            }
+          : undefined,
+      );
     } catch {
       broken = true;
+      return;
     }
+
+    chain = next;
+    lastSeq = seq;
+    spanStart = anchoring ? -1 : spanStart < 0 ? seq : spanStart;
+    if (anchoring) lastAnchoredStep = step;
   }
 
   return {
@@ -190,10 +285,40 @@ export function createLoopEventSink(
     sinkHeartbeat(body) {
       writeLine(rawStamp(body));
     },
+    chainHead() {
+      return chain;
+    },
     close(onFinish) {
+      // The final anchor is what makes the chain cover the *whole* file: the
+      // step-triggered ones stop at the last `slash`/`verify`, and everything
+      // written after it (ratings, trailing heartbeats) would otherwise be
+      // attested by nothing. Nothing is owed when the last line was itself an
+      // anchor, which `spanStart` already encodes -- and the same guard means
+      // a second `close()` cannot publish a duplicate.
+      //
+      // Emitted from inside the stream's own finish callback for the same
+      // reason `writeLine` publishes from the write callback: at that point
+      // every buffered line has actually been flushed. `onFinish` runs after
+      // it, so a caller draining the anchor queue there (see
+      // `apps/mcp/src/index.ts`'s shutdown hook) drains this one too.
+      const publishFinal = () => {
+        if (!onAnchor || broken || spanStart < 0) return;
+        onAnchor({
+          v: ANCHOR_VERSION,
+          run: runId,
+          seq: lastSeq,
+          from: spanStart,
+          step: FINAL_ANCHOR_STEP,
+          chain,
+        });
+        spanStart = -1;
+      };
       try {
         if (stream) {
-          stream.end(onFinish);
+          stream.end(() => {
+            publishFinal();
+            onFinish?.();
+          });
         } else {
           onFinish?.();
         }

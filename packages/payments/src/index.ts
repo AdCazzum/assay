@@ -8,13 +8,20 @@
 export { createHederaPaymentsPort } from './payments.js';
 export type { HederaPaymentsPortConfig } from './payments.js';
 
-export { createHederaSdkTransferClient } from './hedera-client.js';
+export { createHederaSdkTransferClient, makeSdkClient } from './hedera-client.js';
 export type {
   HederaNetwork,
   HederaSdkClientConfig,
   HederaTransferClient,
   TransferHbarParams,
 } from './hedera-client.js';
+
+export { createHederaSdkTopicClient } from './hcs.js';
+export type {
+  HederaTopicClient,
+  SubmitTopicMessageParams,
+  SubmitTopicMessageResult,
+} from './hcs.js';
 
 export { parseOperatorKey, assertKeyMatchesAccount, OperatorKeyError } from './operator-key.js';
 export type { HederaKeyType } from './operator-key.js';

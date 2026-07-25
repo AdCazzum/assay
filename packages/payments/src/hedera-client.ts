@@ -36,7 +36,7 @@ export type HederaSdkClientConfig = {
   keyType?: HederaKeyType;
 };
 
-function makeClient(network: HederaNetwork): Client {
+function forNetwork(network: HederaNetwork): Client {
   switch (network) {
     case 'testnet':
       return Client.forTestnet();
@@ -48,17 +48,29 @@ function makeClient(network: HederaNetwork): Client {
 }
 
 /**
+ * Builds an SDK `Client` with the operator already set. Shared by this
+ * module's transfer client and `hcs.ts`'s topic client so the
+ * ECDSA-vs-ED25519 key parse (`parseOperatorKey`, the footgun that nearly
+ * ended the project — see AGENTS.md) happens in exactly one place rather
+ * than once per Hedera service this adapter speaks to.
+ */
+export function makeSdkClient(config: HederaSdkClientConfig): Client {
+  const client = forNetwork(config.network ?? 'testnet');
+  client.setOperator(
+    AccountId.fromString(config.operatorId),
+    parseOperatorKey(config.operatorKey, config.keyType),
+  );
+  return client;
+}
+
+/**
  * The real adapter: a thin wrapper over `@hashgraph/sdk`'s `TransferTransaction`.
  * Not unit-tested directly (per the issue: don't test the Hedera SDK itself) —
  * exercised by `scripts/spike.ts` against live testnet once credentials exist.
  */
 export function createHederaSdkTransferClient(config: HederaSdkClientConfig): HederaTransferClient {
-  const network = config.network ?? 'testnet';
   const operatorId = AccountId.fromString(config.operatorId);
-  const operatorKey = parseOperatorKey(config.operatorKey, config.keyType);
-
-  const client = makeClient(network);
-  client.setOperator(operatorId, operatorKey);
+  const client = makeSdkClient(config);
 
   return {
     async transferHbar({ toAccountId, amountHbar, memo }) {

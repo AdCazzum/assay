@@ -61,6 +61,10 @@ pnpm --filter @assay/payments exec tsx scripts/spike.ts
 # Hedera: post a bond, then slash part of it
 pnpm --filter @assay/payments exec tsx scripts/bond-slash.ts
 
+# Hedera: publish real consensus anchors for a synthetic loop, then check them
+pnpm --filter @assay/mcp exec tsx scripts/live-anchor-check.ts
+pnpm --filter @assay/mcp exec tsx scripts/verify-anchors.ts --file <the path it printed>
+
 # The Graph: signals pinned to two different blocks, plus an out-of-range block
 pnpm --filter @assay/graph exec tsx scripts/smoke.ts
 
@@ -253,6 +257,44 @@ Note that `assay.eth` and its subnames resolve through a wildcard resolver, so t
 have no entry in the ENS registry at all. Querying `owner()` for `rugscore.assay.eth` returns
 the zero address while its text records read perfectly. That is expected, not a broken
 record. `FEEDBACK.md` has the detail.
+
+**The consensus anchors.** The loop's event log is hash-chained and its head is submitted to
+an HCS topic, so the log itself is checkable rather than taken on trust. The mirror node
+endpoint is public and unauthenticated, so this needs no `.env` at all:
+
+```bash
+pnpm --filter @assay/mcp exec tsx scripts/verify-anchors.ts \
+  --topic 0.0.9753542 --file docs/evidence/anchored-runs.ndjson
+```
+
+That file is committed and holds two live anchored runs, so this works on a fresh clone
+with nothing running. Expect `12/12`. It prints one row per anchor with the consensus
+timestamp Hedera assigned it, and exits non-zero if any anchor fails to reproduce.
+
+To confirm it is checking something rather than always agreeing, break it on purpose:
+
+```bash
+sed 's/"amountHbar":5,/"amountHbar":50,/' docs/evidence/anchored-runs.ndjson > /tmp/tampered.ndjson
+pnpm --filter @assay/mcp exec tsx scripts/verify-anchors.ts \
+  --topic 0.0.9753542 --file /tmp/tampered.ndjson
+```
+
+`8/12`, non-zero exit, each run's last two anchors flipping independently. Substitute
+`--file .assay/loop-events.ndjson` to check a real demo run instead.
+
+A file only holds some of the runs a topic carries, which is normal and is not a failure.
+The header line at the top of each run carries a random run id, every anchor carries the
+same id, and the output says how many of the topic's anchors belong to runs in this file.
+Anchors from other runs are skipped, not counted as mismatches.
+
+The raw messages are readable without this repo:
+
+```
+https://testnet.mirrornode.hedera.com/api/v1/topics/0.0.9753542/messages
+```
+
+Each is base64 and decodes to
+`{"v":2,"run":"<16 hex>","seq":N,"from":M,"step":"...","chain":"<64 hex>"}`.
 
 **The verifier commitment.** The manifest's `verifierHash` is a real sha256 over the two
 files that decide a verdict, and it is reproducible with standard tools:

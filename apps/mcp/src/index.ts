@@ -20,6 +20,7 @@ import { createCapabilityRegistry, createEventStamper } from '@assay/core';
 import { createEnsRegistry } from '@assay/registry';
 import {
   createHederaPaymentsPort,
+  createHederaSdkTopicClient,
   createHederaSdkTransferClient,
   type HederaKeyType,
   type HederaNetwork,
@@ -29,6 +30,7 @@ import { createRugScoreCapability, createLyingRugScoreProvider } from '@assay/ca
 import { createAssayMcpServer, SERVER_NAME, SERVER_VERSION } from './server.js';
 import { createLiveAssayNode } from './live-node.js';
 import { createLoopEventSink } from './loop-event-sink.js';
+import { createLoopAnchor } from './loop-anchor.js';
 import type { AssayNodePort } from './node-port.js';
 
 export const APP_ID = '@assay/mcp';
@@ -130,7 +132,82 @@ export function buildLiveNodeFromEnv(): AssayNodePort {
   // nothing further, it does not break a tool call.
   const sinkPath = process.env.ASSAY_LOOP_EVENTS_SINK;
   const stamp = createEventStamper();
-  const sink = sinkPath ? createLoopEventSink(sinkPath, stamp) : undefined;
+
+  // The consensus anchor over that file (`loop-anchor.ts`): a SHA-256 chain
+  // across every line written, whose head is submitted to an HCS topic at the
+  // loop's turning points, so the narration this project shows an audience is
+  // checkable against public data instead of trusted because we wrote it.
+  //
+  // Both vars must be set. A topic with no sink has nothing to attest, and a
+  // sink with no topic is exactly the previous behaviour -- which stays the
+  // default, so the offline dashboard replay, the CI run and every existing
+  // test are untouched by this and no demo path gains a new way to fail.
+  const topicId = process.env.HEDERA_LOOP_TOPIC_ID;
+  const topicClient =
+    sinkPath && topicId
+      ? createHederaSdkTopicClient({
+          operatorId: env.HEDERA_OPERATOR_ID,
+          operatorKey: env.HEDERA_OPERATOR_KEY,
+          network,
+          keyType,
+        })
+      : undefined;
+  const anchor =
+    topicClient && topicId
+      ? createLoopAnchor({
+          client: topicClient,
+          topicId,
+          // stderr, never stdout (that is the MCP JSON-RPC channel). Worth
+          // narrating: this is the only place the topic's own sequence
+          // numbers are visible while the demo is running.
+          onPublished: ({ record, sequenceNumber, elapsedMs }) =>
+            process.stderr.write(
+              `[assay] anchored seq ${record.from}-${record.seq} (${record.step}) ` +
+                `as topic ${topicId} message #${sequenceNumber} in ${elapsedMs}ms: ${record.chain}\n`,
+            ),
+        })
+      : undefined;
+
+  const sink = sinkPath
+    ? createLoopEventSink(sinkPath, stamp, {
+        onAnchor: anchor ? (record) => anchor.anchor(record) : undefined,
+      })
+    : undefined;
+
+  // Nothing else closes these. The MCP server runs until its client kills the
+  // process, so without a signal handler the final anchor -- the one that
+  // commits to the whole file rather than stopping at the last `slash` (see
+  // `LoopEventSink.close`) -- would never be published, and the tail of every
+  // run would be attested by nothing. `once` so a second signal is not a
+  // double close; the drain is bounded inside `anchor.close()` so an
+  // unreachable topic delays the exit rather than hanging it; `process.exit`
+  // because the Hedera SDK client holds its gRPC channels open and the
+  // process would otherwise not end on its own (same behaviour
+  // `apps/watchdog/src/index.ts` documents).
+  if (sink) {
+    let closing = false;
+    const shutdown = () => {
+      if (closing) return;
+      closing = true;
+      sink.close(() => {
+        const drained = anchor ? anchor.close() : Promise.resolve({ drained: true });
+        void drained.then((result) => {
+          // The digest of the whole run, printed where the operator can see
+          // it: this is the value `scripts/verify-anchors.ts` reproduces from
+          // the file, so having it on stderr means the check can be run (or
+          // quoted) without going back to the topic first.
+          process.stderr.write(
+            `[assay] loop chain head ${sink.chainHead()}` +
+              `${result.drained ? '' : ' (anchor queue did not drain before exit)'}\n`,
+          );
+          topicClient?.close();
+          process.exit(0);
+        });
+      });
+    };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+  }
 
   const registry = createEnsRegistry({
     rpcUrl: env.SEPOLIA_RPC_URL,

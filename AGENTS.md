@@ -120,6 +120,13 @@ Three independent networks (no bridge). Provide credentials via a local `.env`
   `packages/payments/scripts/create-account.ts`, which keeps the key; recycle its
   balance with `sweep-payee.ts`, since everything otherwise flows one way and the
   operator drains at roughly 90 HBAR per rehearsal cycle.
+- An **HCS topic** (`HEDERA_LOOP_TOPIC_ID`), created once with
+  `packages/payments/scripts/create-topic.ts`. The loop's NDJSON event log is
+  hash-chained and its head anchored there, so the narration is checkable instead
+  of trusted. Optional: unset, the sink still writes its file and publishes
+  nothing, which is what CI and the offline replay run on. The topic has **no
+  submit key** on purpose, since an anchor only means anything if its chain value
+  reproduces from the log, so a stranger cannot forge one for a log they lack.
 - Sepolia wallet private key that owns the ENS parent name (manifest + reputation
   writes). The parent lives on **Sepolia** (mainnet `assay.eth` is taken by a third
   party and is not needed for the build). Subnames resolve through a **wildcard

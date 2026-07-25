@@ -41,6 +41,32 @@ transaction memo, confirmed by polling the mirror node's REST API.** This
 matches the fallback SPEC.md and the issue call for, chosen after checking, not
 by default.
 
+## Second service: Hedera Consensus Service
+
+`hcs.ts` adds a topic client alongside the transfer client. It is not part of
+`PaymentsPort` and nothing on the payment path depends on it: the two are kept
+separate because they are used by different things for different reasons, and
+only one of them sits on a tool call that must not fail.
+
+What it is for is in `apps/mcp/src/loop-anchor.ts`, which has the full argument.
+The short version: the loop's NDJSON event log was the only artefact in this
+project asking to be believed rather than checked, since it is a local file I
+could rewrite after a run. The sink now folds every line into a SHA-256 chain
+and submits the head to a topic at each turning point of the loop, so the log is
+tamper-evident against consensus ordering that I do not control.
+
+Deliberately a chain head and not a copy of the events. Six ~100-byte messages
+cover a run of any length, they carry no job data, and a match proves strictly
+more: not that those events existed, but that no line before the anchor was
+added, removed, reordered or edited. `packages/payments/scripts/create-topic.ts`
+creates the topic (no submit key, and that file explains why that is safe here);
+`apps/mcp/scripts/verify-anchors.ts` is the check, and it needs no credentials.
+
+Measured on testnet: 1.0s to 2.5s per anchor from submit to receipt, 12
+samples, median ~1.7s. The receipt is awaited on purpose. A submit nobody
+confirmed reaching consensus is not evidence of anything, which is the same
+lesson `confirmPayment` learned the hard way below.
+
 ## Design
 
 - `pay(amountHbar, requestHash)` — a `TransferTransaction` from the operator

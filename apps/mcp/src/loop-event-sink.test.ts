@@ -41,12 +41,16 @@ describe('createLoopEventSink (issue #93)', () => {
     sink.sinkLoopEvent(second);
     await closeAndWait(sink);
 
+    // Line one is the run header (`RUN_LINE_KIND`, see loop-anchor.ts): it
+    // marks where this run's segment begins in an append-only file, and it
+    // takes the first `seq` because it is a real line in the chain.
     const lines = readFileSync(sinkPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    expect(lines).toHaveLength(2);
-    expect(lines[0]).toEqual(first);
-    expect(lines[1]).toEqual(second);
-    expect(lines[0].seq).toBe(1);
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatchObject({ kind: 'run', seq: 1 });
+    expect(lines[1]).toEqual(first);
+    expect(lines[2]).toEqual(second);
     expect(lines[1].seq).toBe(2);
+    expect(lines[2].seq).toBe(3);
   });
 
   it('shares one strictly-increasing seq between real LoopEvents and heartbeat lines', async () => {
@@ -60,10 +64,11 @@ describe('createLoopEventSink (issue #93)', () => {
     await closeAndWait(sink);
 
     const lines = readFileSync(sinkPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    expect(lines.map((l) => l.seq)).toEqual([1, 2, 3]);
-    expect(lines[1].kind).toBe('heartbeat');
-    expect(lines[0].kind).toBeUndefined();
-    expect(lines[2].kind).toBeUndefined();
+    expect(lines.map((l) => l.seq)).toEqual([1, 2, 3, 4]);
+    expect(lines[0].kind).toBe('run');
+    expect(lines[2].kind).toBe('heartbeat');
+    expect(lines[1].kind).toBeUndefined();
+    expect(lines[3].kind).toBeUndefined();
   });
 
   it('a heartbeat line never carries "step" and a real LoopEvent line never carries "kind" (the tailer\'s disambiguator)', async () => {
@@ -72,7 +77,7 @@ describe('createLoopEventSink (issue #93)', () => {
     const sink = createLoopEventSink(sinkPath, stamp);
     sink.sinkHeartbeat({ kind: 'heartbeat', of: 'payment-confirm', attempt: 1, elapsedMs: 500, state: 'pending' });
     await closeAndWait(sink);
-    const [line] = readFileSync(sinkPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const [, line] = readFileSync(sinkPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     expect(line.step).toBeUndefined();
     expect(line.kind).toBe('heartbeat');
   });
