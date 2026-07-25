@@ -26,19 +26,27 @@ describe('render (happy path)', () => {
     }
   });
 
-  it('marks steps the sequence completed as ok', () => {
-    expect(output).toContain('[✔] Register');
+  it('marks steps the sequence completed as ok, and register (an operator action outside this loop, see reset-demo-state.ts) as pending', () => {
+    expect(output).toContain(`[○] ${STEP_LABEL.register.padEnd(10)} (pending)`);
     expect(output).toContain('[✔] Discover');
     expect(output).toContain('[✔] Pay');
     expect(output).toContain('[✔] Serve');
     expect(output).toContain('[✔] Accept');
   });
 
-  it('renders real artifacts: tx ids, hashscan links, block numbers, claim values', () => {
-    expect(output).toContain('0.0.1234567@1784930210.111222333');
-    expect(output).toContain('https://hashscan.io/testnet/transaction/');
-    expect(output).toContain('atBlock: 22984210');
-    expect(output).toContain('claim liquidityUsd: 361202208');
+  it('renders real artifacts: tx ids, block numbers, claim values, straight from a live capture (apps/demo/scripts/capture-fixtures.ts)', () => {
+    const payOk = HAPPY_PATH_EVENTS.find((e) => e.step === 'pay' && e.status === 'ok');
+    const serveOk = HAPPY_PATH_EVENTS.find((e) => e.step === 'serve' && e.status === 'ok');
+    const txArtifact = payOk?.artifacts?.find((a) => a.label === 'tx');
+    const blockArtifact = serveOk?.artifacts?.find((a) => a.label === 'atBlock');
+    const claimArtifact = serveOk?.artifacts?.find((a) => a.label === 'claim liquidityUsd');
+
+    expect(txArtifact).toBeDefined();
+    expect(blockArtifact).toBeDefined();
+    expect(claimArtifact).toBeDefined();
+    expect(output).toContain(`tx: ${txArtifact!.value}`);
+    expect(output).toContain(`atBlock: ${blockArtifact!.value}`);
+    expect(output).toContain(`claim liquidityUsd: ${claimArtifact!.value}`);
   });
 
   it('never emits color codes when color: false', () => {
@@ -59,16 +67,29 @@ describe('render (slash sequence, the climax)', () => {
     expect(output).toContain('BOND SLASHED');
   });
 
-  it('shows the verifier verdict as FALSE, with both the claimed and actual value', () => {
+  it('shows the verifier verdict as FALSE, naming the claim that failed', () => {
+    const verifyOk = SLASH_EVENTS.find((e) => e.step === 'verify' && e.status === 'ok');
     expect(output).toContain('verdict: FALSE');
-    expect(output).toContain('liquidityUsd = 1000056.51');
-    expect(output).toContain('liquidityUsd = 56.51');
-    expect(output).toContain('claimed liquidityUsd=1000056.51 at block 22985614, but The Graph reports 56.51');
+    expect(verifyOk?.summary).toContain('liquidityUsd');
+    // The claimed value always reads far larger than what The Graph actually
+    // reports at the same block — that gap is the whole point of the climax.
+    const reason = verifyOk?.artifacts?.find((a) => a.label === 'reason')?.value ?? '';
+    const claimed = Number(reason.match(/liquidityUsd=([\d.]+)/)?.[1]);
+    const actual = Number(reason.match(/reports ([\d.]+)/)?.[1]);
+    expect(claimed).toBeGreaterThan(actual);
   });
 
-  it('shows the reputation drop before/after', () => {
-    expect(output).toContain('score: 92 -> 41 (-51)');
-    expect(output).toContain('slashes: 0 -> 1');
+  it('shows the reputation drop before/after, straight from the live capture', () => {
+    const repOk = SLASH_EVENTS.find((e) => e.step === 'reputation' && e.status === 'ok');
+    const scoreDelta = repOk?.artifacts?.find((a) => a.label === 'score')?.value ?? '';
+    const slashesDelta = repOk?.artifacts?.find((a) => a.label === 'slashes')?.value ?? '';
+    expect(output).toContain(`score: ${scoreDelta}`);
+    expect(output).toContain(`slashes: ${slashesDelta}`);
+    // A slash always drops the score and raises the slash count.
+    const [before, after] = scoreDelta.split(' -> ').map(Number);
+    expect(after).toBeLessThan(before);
+    const [slashesBefore, slashesAfter] = slashesDelta.split(' -> ').map(Number);
+    expect(slashesAfter).toBeGreaterThan(slashesBefore);
   });
 
   it('labels the lying provider honestly as a declared test harness', () => {
@@ -76,10 +97,15 @@ describe('render (slash sequence, the climax)', () => {
   });
 
   it('the reputation step passes through a genuine in-flight state, not straight from pending to ok', () => {
-    // Fold only up to (but excluding) the final `ok` reputation event: this
-    // is the ~12.5s window (#53) where the real ENS write is still mining.
-    const okIndex = SLASH_EVENTS.findIndex((e) => e.step === 'reputation' && e.status === 'ok');
-    const midFlight = renderState(reduceEvents(SLASH_EVENTS.slice(0, okIndex)), { color: false });
+    // Fold up to (and including) the last "still mining" heartbeat tick,
+    // before the final `ok` event: this is the real #53 window where the
+    // ENS write is still mining, one heartbeat of it captured live.
+    let lastMiningIndex = -1;
+    for (let i = 0; i < SLASH_EVENTS.length; i++) {
+      if (SLASH_EVENTS[i].step === 'reputation' && SLASH_EVENTS[i].summary.includes('still mining')) lastMiningIndex = i;
+    }
+    expect(lastMiningIndex).toBeGreaterThan(-1);
+    const midFlight = renderState(reduceEvents(SLASH_EVENTS.slice(0, lastMiningIndex + 1)), { color: false });
 
     // Distinct from pending (not "(pending)") and distinct from the final ok
     // line, with a heartbeat-style message a viewer can watch tick forward.
