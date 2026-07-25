@@ -32,7 +32,13 @@ import {
   type ProviderRecord,
   type Reputation,
 } from '@assay/core';
-import type { AssayNodePort, DiscoverResult } from '../node-port.js';
+import type {
+  AssayNodePort,
+  DiscoverResult,
+  ProviderListItem,
+  RegisterProviderResult,
+  VerifyClaimResult,
+} from '../node-port.js';
 
 /**
  * Same name as the real live provider on purpose: the point of the demo is
@@ -133,6 +139,35 @@ export function createBadProviderDemoNode(): AssayNodePort {
 
     async rate(_jobId: string, _satisfied: boolean, _comment?: string): Promise<Job> {
       throw new DemoFixtureNotSupportedError('no job was ever served here, so there is nothing to rate.');
+    },
+
+    async verifyClaim(_jobId: string, _claimKey: string): Promise<VerifyClaimResult> {
+      throw new DemoFixtureNotSupportedError('no job was ever served here, so there is nothing to verify.');
+    },
+
+    async registerProvider(): Promise<RegisterProviderResult> {
+      throw new DemoFixtureNotSupportedError(
+        'it has no real registry write path; it only resolves the one fabricated record above.',
+      );
+    },
+
+    // Read-only and cheap, so this fixture answers it for real rather than
+    // refusing: the one fabricated record this file knows about, in exactly
+    // the shape a real `listProviders` hit takes.
+    async listProviders(): Promise<ProviderListItem[]> {
+      return [
+        { name: BAD_PROVIDER_NAME, outcome: 'ok', provider: BAD_PROVIDER_RECORD, assessment: assessProvider(BAD_PROVIDER_RECORD) },
+      ];
+    },
+
+    async getJob(_jobId: string): Promise<Job> {
+      throw new DemoFixtureNotSupportedError('no job was ever served here, so there is nothing to get.');
+    },
+
+    // No job store behind this fixture (see module doc comment: it never
+    // actually serves anything), so the only honest answer is "none".
+    async listJobs(): Promise<Job[]> {
+      return [];
     },
   };
 }

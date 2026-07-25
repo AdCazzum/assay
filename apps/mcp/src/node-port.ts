@@ -10,7 +10,16 @@
  * need to change, because they only ever see `AssayNodePort`.
  */
 
-import type { Job, ProviderAssessment, ProviderRecord } from '@assay/core';
+import type {
+  Claim,
+  Job,
+  Manifest,
+  ProviderAssessment,
+  ProviderRecord,
+  RegisterProgress,
+  RegisterResult,
+  Verdict,
+} from '@assay/core';
 
 /**
  * What `discover` resolves with: the raw provider record (manifest +
@@ -27,9 +36,37 @@ export type DiscoverResult = {
 };
 
 /**
- * The requester-side operations an MCP client drives. Maps 1:1 to the four
- * tools (`discover`, `pay_and_call`, `challenge`, `rate`); see SPEC.md §7 for
- * the loop each one is a step of.
+ * What `verifyClaim` resolves with (issue #84). Deliberately carries the
+ * job's *full* claim set, not just the one named `claimKey`: the point of
+ * this tool is to give a model the material to reach "this is false, I am
+ * challenging it" on its own evidence, and that means showing what was
+ * claimed (`claims`, each already carrying its own `atBlock`) side by side
+ * with the verdict the same claim re-derived from The Graph produced.
+ * Nothing here hardcodes a signal name -- `claims` is whatever the capability
+ * that served this job actually claimed, and `verdict.reason` is whatever
+ * that capability's own `verify()` wrote (SPEC.md §6, §12), so this stays
+ * correct for any capability, not just rug-score.
+ */
+export type VerifyClaimResult = {
+  jobId: string;
+  claimKey: string;
+  claims: Claim[];
+  verdict: Verdict;
+};
+
+/** One candidate resolved by `listProviders` (issue #84): either a real hit or a clearly-labelled miss, never a thrown error that would kill the whole call. */
+export type ProviderListItem =
+  | { name: string; outcome: 'ok'; provider: ProviderRecord; assessment: ProviderAssessment }
+  | { name: string; outcome: 'miss'; reason: string };
+
+/** `registerProvider`'s result: `register()`'s own `RegisterResult` plus the full ENS name the label resolved to. */
+export type RegisterProviderResult = RegisterResult & { name: string };
+
+/**
+ * The requester-side operations an MCP client drives. Maps 1:1 to the nine
+ * tools (`discover`, `pay_and_call`, `challenge`, `rate`, `verify_claim`,
+ * `register_provider`, `list_providers`, `get_job`, `list_jobs`); see SPEC.md
+ * §7 for the loop each one is a step of.
  */
 export interface AssayNodePort {
   /**
@@ -73,4 +110,58 @@ export interface AssayNodePort {
    * `challenge`, not this, when a specific claim looks objectively false.
    */
   rate(jobId: string, satisfied: boolean, comment?: string): Promise<Job>;
+
+  /**
+   * Re-derives one claim of an already-served job from The Graph, at that
+   * claim's own `atBlock`, and reports the verdict -- without moving the job
+   * or spending its one `served -> challenged` transition (issue #84). This
+   * is `challenge`'s read-only sibling: same real re-derivation, same cost,
+   * but nothing here commits to a dispute. Use this first to decide whether
+   * a claim is actually false; call `challenge` only once you have.
+   *
+   * Unlike `challenge`, does not require the job to be `served`: a job
+   * already challenged, slashed, or settled can still be re-verified.
+   */
+  verifyClaim(jobId: string, claimKey: string): Promise<VerifyClaimResult>;
+
+  /**
+   * Registers a brand-new provider under the Assay parent name (issue #84):
+   * posts a real bond, publishes the manifest, and initializes reputation,
+   * in that order, through `@assay/core`'s `register()` (never reimplemented
+   * here). `label` is a bare subname label (e.g. `"myagent"`, no dots): the
+   * full ENS name is built as `"<label>.<parent>"`, where `<parent>` is this
+   * node's configured Assay parent name.
+   *
+   * Real, multi-network, and slow (a bond plus two ENS writes, ~25s
+   * measured): `onProgress`, if given, is invoked once per phase boundary
+   * (posting the bond, publishing the manifest, initializing reputation,
+   * done) so a caller can narrate it rather than block in silence.
+   */
+  registerProvider(
+    label: string,
+    manifest: Omit<Manifest, 'bondRef'>,
+    bondHbar: number,
+    onProgress?: (progress: RegisterProgress) => void,
+  ): Promise<RegisterProviderResult>;
+
+  /**
+   * Resolves every candidate provider name this node is configured with
+   * (issue #84): ENS cannot be enumerated, so "discovery" here means
+   * resolving a known set, not searching one. Each candidate comes back as
+   * either an `'ok'` hit (provider + assessment, exactly `discover`'s
+   * result) or a clearly-labelled `'miss'` (name does not resolve, or has no
+   * manifest) -- one candidate failing never fails the whole call.
+   */
+  listProviders(): Promise<ProviderListItem[]>;
+
+  /**
+   * Reads one job by id off this node's job store (issue #84): status,
+   * claims (each with its own `atBlock`), the funding payment, and any
+   * verdict. Read-only, no network call. Throws `UnknownJobError` if
+   * `jobId` was never created.
+   */
+  getJob(jobId: string): Promise<Job>;
+
+  /** Every job this node's store has ever created, in creation order (issue #84). Read-only, no network call. */
+  listJobs(): Promise<Job[]>;
 }

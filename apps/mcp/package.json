@@ -13,7 +13,8 @@
     "test": "vitest run --passWithNoTests",
     "agent:live": "tsx scripts/run-agent.ts --target live",
     "agent:good-provider": "tsx scripts/run-agent.ts --target good-provider",
-    "agent:bad-provider": "tsx scripts/run-agent.ts --target bad-provider"
+    "agent:bad-provider": "tsx scripts/run-agent.ts --target bad-provider",
+    "check:live-tools": "tsx scripts/live-tool-check.ts"
   },
   "dependencies": {
     "@assay/cap-rugscore": "workspace:*",
