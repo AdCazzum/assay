@@ -7,12 +7,15 @@
  * the exact same prompt to the exact same agent code against a good provider
  * and a bad one and showing it decide differently. The "good" leg is real:
  * `rugscore.assay.eth` is a live ENS record on Sepolia (see `../index.ts`'s
- * `buildLiveNodeFromEnv`). There is, as of this writing, no second live ENS
- * registration with a bad track record to resolve for the other leg —
- * creating one needs a brand-new subname with its own resolver assigned
- * first (see `packages/registry/scripts/smoke.ts`'s prerequisite note), which
- * is `packages/registry`'s surface, not this app's, and cannot be done
- * headlessly here (no browser, no GUI on this box). Rather than fake that
+ * `buildLiveNodeFromEnv`). When this was written there was no second live ENS
+ * registration with a bad track record to resolve for the other leg, and
+ * standing one up looked like it needed a brand-new subname with its own
+ * resolver assigned first. Both halves of that turned out to be wrong: the
+ * parent's wildcard resolver answers for every label with no creation step
+ * and no transaction (see `FEEDBACK.md`), and `vantage.<parent>` is now a
+ * live, badly-reputed registration the demo resets and reads for real. This
+ * file is kept as the harness the committed transcripts in
+ * `apps/mcp/agent/transcripts/` were captured with. Rather than fake that
  * ENS read, this file is an honestly-declared fixture: `discover` and
  * `payAndCall` on it never touch Sepolia, Hedera, or The Graph, they return a
  * fabricated `ProviderRecord` with a genuinely bad track record. Everything

@@ -96,11 +96,12 @@ differently, with no branch anywhere in this repo's code picking the outcome.
 - **`agent:bad-provider`** talks to a fully declared fixture server
   (`src/demo/serve-bad-provider.ts` / `src/demo/bad-provider-node.ts`):
   `discover` and `payAndCall` never touch Sepolia, Hedera, or The Graph at
-  all. Registering a second, badly-reputed live ENS name needs a brand-new
-  subname with its own resolver assigned first, which is
-  `packages/registry`'s surface, not this app's, and cannot be done
-  headlessly on this box (no browser, no GUI here — see
-  `packages/registry/scripts/smoke.ts`'s prerequisite note). Rather than fake
+  all. When it was written, registering a second, badly-reputed live ENS name
+  looked like it needed a brand-new subname with its own resolver assigned
+  first. It does not: the parent's wildcard resolver answers for every label
+  with no creation step, and `vantage.assay.eth` is now a live registration
+  with slashes on record that the demo reads for real. This leg is kept as
+  the harness its committed transcript was captured with. Rather than fake
   that ENS read, `bad-provider-node.ts` is honestly declared as a fixture in
   its own doc comment and in every error message it can throw. What *is* real
   in that leg: `assessProvider` and `evaluatePayDecision` are `@assay/core`'s
@@ -111,8 +112,11 @@ differently, with no branch anywhere in this repo's code picking the outcome.
   slashed, bond no bigger than one call's price), not a hairline case.
 
 All three runs get the identical prompt, the identical `capabilityId`
-(`"rugscore.assay.eth"`), and the identical token request
-(`0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`, USDC). The only thing that
+(`"rugscore.assay.eth"`), and the identical token request: whatever
+`prompt.md` names, today `0xd6c68bc8c862722e140e7b339ddf8a144a7d3530`
+(GOODCAT, a real thin token). The transcripts on file predate #93/#94 and so
+show the earlier target, `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (USDC).
+The only thing that
 differs between them is which process is backing the `assay` MCP server, i.e.
 which `ProviderRecord` that name resolves to — exactly the variable a
 requester agent would face querying different real counterparties in the

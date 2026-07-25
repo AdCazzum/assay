@@ -5,15 +5,15 @@
  * paying, on the same prompt, same capability id, same token.
  *
  * Why this is a hybrid rather than either the pure live node or a pure
- * fixture: as of this writing there is exactly one live Assay provider
- * registered on Sepolia, `rugscore.assay.eth`, and its *current* live
- * reputation (see `apps/mcp/agent/README.md`'s live run notes) posts a bond
- * far too small relative to its price for any careful agent to rationally
- * pay -- a real, disclosed fact about the live record's present state, not a
- * bug here. Registering a second, well-collateralized live name needs a
- * brand-new ENS subname with its own resolver assigned first, which is
- * `packages/registry`'s surface and cannot be done headlessly on this box
- * (see `bad-provider-node.ts`'s doc comment for the same constraint).
+ * fixture: when it was written there was exactly one live Assay provider
+ * registered on Sepolia, `rugscore.assay.eth`, and its live reputation at
+ * the time posted a bond far too small relative to its price for any careful
+ * agent to rationally pay. That was a real, disclosed fact about the state
+ * of that record then, not a bug here. Standing up a second,
+ * well-collateralized live name looked like it needed a brand-new subname
+ * with its own resolver first; it does not, and two live names exist now
+ * (see `bad-provider-node.ts`'s doc comment). This leg is kept as the
+ * harness its committed transcript was captured with.
  *
  * So: only `registry.resolveProvider` is a declared fixture here, returning
  * a fabricated but well-collateralized `ProviderRecord`. Everything

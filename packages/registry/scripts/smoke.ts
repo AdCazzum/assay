@@ -11,14 +11,16 @@
  * SMOKE_LABEL), reads it back, and prints both plus the ENS-write elapsed
  * time (SPEC.md §16 flags ENS write latency as a live risk).
  *
- * IMPORTANT PREREQUISITE: this only writes a *text record* on an existing
- * name. It does not create the subname and does not set its resolver. If
- * `<label>.${ENS_PARENT_NAME}` has never been created (no owner set) or was
- * created without a resolver, this script fails fast with
- * NoResolverConfiguredError -- create the subname and give it a resolver
- * first (e.g. in the ENS Manager app: app.ens.domains -> your name -> +
- * Subname -> assign it a resolver, or set one explicitly if you create it
- * some other way). See the PR notes for how this was verified.
+ * PREREQUISITE, as originally written: this only writes a *text record* on
+ * an existing name, it does not create the subname and does not set its
+ * resolver, so a label with no resolver fails fast with
+ * NoResolverConfiguredError. That error path is still real, but the manual
+ * step it used to prescribe (create the subname in the ENS Manager app and
+ * assign it a resolver) is not needed under this parent: `assay.eth` on
+ * Sepolia resolves through a **wildcard resolver**, so every label under it
+ * is writable with no creation transaction at all. See `FEEDBACK.md`. Point
+ * this script at a parent without one and the original prerequisite applies
+ * again.
  *
  * This script always writes to a *subname* (`<label>.${ENS_PARENT_NAME}`),
  * never to the bare parent name itself, by construction -- the template

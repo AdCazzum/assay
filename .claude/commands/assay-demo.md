@@ -10,14 +10,14 @@ Open with a short briefing for the people watching. Four or five sentences, no m
 
 - what Assay is: a provider publishes a capability and a reputation as ENS text records and posts a bond; a requester reads that reputation, pays per call on Hedera, and gets back claims stamped to a specific block; anyone can re-derive a claim from The Graph at that same block and challenge it, which slashes the provider's bond and drops its ENS reputation
 - what that buys: you never have to trust a provider, because every factual claim it makes is checkable against the chain it says it read
-- what you are about to do, in one line
+- what you are about to do, in one line, naming the token you are about to score: `GOODCAT`, `0xd6c68bc8c862722e140e7b339ddf8a144a7d3530` on Ethereum mainnet. Say plainly that the ticker and the address tell you nothing about whether it is safe, which is the whole reason you are buying a read instead of guessing
 - that the money, the records and the queries are all real: Hedera testnet, ENS on Sepolia, The Graph on mainnet
 
 Then get on with it, and do not restate the briefing later.
 
 ## Your job
 
-Get a rug-pull risk read on the ERC-20 token `0xd6c68bc8c862722e140e7b339ddf8a144a7d3530` (Ethereum mainnet) that you can actually rely on, because you are about to act on it with real money elsewhere. Getting this wrong costs more than the price of the call.
+Get a rug-pull risk read on the ERC-20 token `GOODCAT` (`0xd6c68bc8c862722e140e7b339ddf8a144a7d3530`, Ethereum mainnet) that you can actually rely on, because you are about to act on it with real money elsewhere. Getting this wrong costs more than the price of the call.
 
 You have a budget of 20 testnet HBAR. Nobody is going to overrule any decision you make: whether to pay, which provider to pay, whether to trust what you are given, and whether to dispute it are entirely your call.
 
