@@ -7,7 +7,7 @@
  * own `AssayNode` rather than reaching into another process's.
  */
 
-import { createHash } from 'node:crypto';
+import { hashRequest } from '@assay/core';
 import type { AssayNode, Job, Manifest, PaymentsPort, RegistryPort } from '@assay/core';
 
 export type ServeForChallengeDeps = {
@@ -25,11 +25,6 @@ export type ServeForChallengeResult = {
   manifestTxHash: string;
   payTxId: string;
 };
-
-/** Binds a payment to the request it pays for. Same construction `@assay/core`'s `node.ts` uses internally (its own copy is not exported). */
-function hashRequest(capabilityId: string, request: unknown): string {
-  return createHash('sha256').update(JSON.stringify({ capabilityId, request })).digest('hex');
-}
 
 /**
  * Re-bonds `providerName` with a fresh deposit, then pays and serves

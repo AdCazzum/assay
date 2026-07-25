@@ -59,7 +59,6 @@
  * failure mode this whole issue exists to prevent).
  */
 
-import { createHash } from 'node:crypto';
 import {
   DEFAULT_PAY_DECISION_POLICY,
   evaluatePayDecision,
@@ -69,6 +68,7 @@ import {
   type PaymentsPort,
   type ProviderRecord,
   type RegistryPort,
+  hashRequest,
 } from '@assay/core';
 import type { LoopEvent } from '@assay/dashboard';
 import { createStepMachine, type DemoSession, type StepRunners } from './step-machine.js';
@@ -81,11 +81,6 @@ export {
   type DemoSessionState,
   type DemoStepId,
 } from './step-machine.js';
-
-/** Binds a payment to the exact request it pays for — same construction `@assay/core`'s `node.ts` (not exported) and `apps/watchdog`'s `serve-for-challenge.ts` (its own copy) both use. */
-function hashRequest(capabilityId: string, request: unknown): string {
-  return createHash('sha256').update(JSON.stringify({ capabilityId, request })).digest('hex');
-}
 
 /** The USDC token the real live agent (`apps/mcp/agent/prompt.md`) already asks the good provider about. Reused here so the demo scores the same, already-verified-live token (packages/graph/README.md). */
 export const DEFAULT_REQUEST_TOKEN = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
