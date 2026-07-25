@@ -148,18 +148,25 @@ record the demo's opening depends on. Override with `WATCHDOG_PROVIDER_NAME` if 
 ## Level 6 — the real requester agent
 
 ```bash
-bash -lc 'pnpm --filter @assay/mcp agent:live'
+bash -lc 'eval "$(~/.local/bin/mise activate bash)"; pnpm --filter @assay/mcp agent:live'
 ```
 
-The `bash -lc` is not optional. `CLAUDE_CODE_OAUTH_TOKEN` lives in `~/.bashrc`, so a
-non-login shell fails with `Not logged in`.
+Both halves of that are load-bearing, and having only one is the common failure:
+
+- `CLAUDE_CODE_OAUTH_TOKEN` is exported **above** the interactive guard in `~/.bashrc`, so a
+  login shell has it. Without it the agent dies with `Not logged in`.
+- `mise` (node, pnpm) is activated **below** that guard, so a login shell does **not** have it.
+  Without it you get `pnpm: command not found`.
+
+So plain `bash -lc 'pnpm ...'` does not work. `./scripts/demo.sh` wraps both if you would
+rather not remember.
 
 Takes 42 to 57 seconds, mostly the agent thinking, and should end `VERDICT: PAID`. The two
 fixture runs are the ones that prove there is no hidden branch:
 
 ```bash
-bash -lc 'pnpm --filter @assay/mcp agent:bad-provider'   # -> DECLINED
-bash -lc 'pnpm --filter @assay/mcp agent:good-provider'  # -> PAID
+bash -lc 'eval "$(~/.local/bin/mise activate bash)"; pnpm --filter @assay/mcp agent:bad-provider'   # -> DECLINED
+bash -lc 'eval "$(~/.local/bin/mise activate bash)"; pnpm --filter @assay/mcp agent:good-provider'  # -> PAID
 ```
 
 One prompt (`apps/mcp/agent/prompt.md`, which sets a goal and a budget and never says
@@ -188,6 +195,7 @@ is built on.
 |---|---|
 | `INVALID_SIGNATURE` | the Hedera key was parsed on the wrong curve. Use `parseOperatorKey`, set `HEDERA_KEY_TYPE=ecdsa` |
 | `Not logged in` | missing `bash -lc`, so `CLAUDE_CODE_OAUTH_TOKEN` was not inherited |
+| `pnpm: command not found` under `bash -lc` | mise sits below the interactive guard, so a login shell lacks it. Add `eval "$(~/.local/bin/mise activate bash)";` or use `./scripts/demo.sh` |
 | `pnpm: command not found` | missing `eval "$(~/.local/bin/mise activate bash)"` |
 | the agent declines to pay | reputation damaged by an earlier rehearsal. Run the reset |
 | ENS appears frozen for 20s | it is not. Writes take 12 to 25 seconds |
