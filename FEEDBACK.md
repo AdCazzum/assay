@@ -198,7 +198,7 @@ Note that `setSubnodeRecord` directly through the registry is *denied* for a wra
 since the registry owner is the NameWrapper. So the wildcard path is not just convenient,
 it is the one that works.
 
-### Write latency is 12 to 25 seconds and the spread is the problem
+### Write latency is 8 to 25 seconds and the spread is the problem
 
 Seven real `setText` confirmations, in milliseconds:
 
@@ -206,12 +206,16 @@ Seven real `setText` confirmations, in milliseconds:
 24600, 12588, 12389, 16435, 12391, 16572, 16587
 ```
 
-Range 12.4s to 24.6s, median ~16.4s. It does not converge on a number, and the variance
-hurts more than the mean: you cannot plan a 90-second demo around a step that might take
-12 seconds or might take 25.
+That batch alone gives range 12.4s to 24.6s, median ~16.4s. A later rehearsal added more
+confirmations and pushed the low end down to 8.3s rather than narrowing anything, so the
+range across both rehearsals is **8.3s to 24.6s**, median ~13s (see
+`docs/demo-run-sheet.md`, which tracks the running figure). It does not converge on a
+number, and the variance hurts more than the mean: you cannot plan a 90-second demo around
+a step that might take 8 seconds or might take 25.
 
 For context, the same demo's Hedera settlement is 4.1s, so ENS is the slowest thing on my
-critical path by a factor of four, and it is what the closing beat depends on.
+critical path by a factor of three at the median, and worse on a bad draw, and it is what
+the closing beat depends on.
 
 I do not think this is a protocol problem so much as an unstated expectation. Publishing a
 realistic latency range for testnet text-record writes, or exposing a progress signal

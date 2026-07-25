@@ -62,8 +62,16 @@ export class FakeRegistryPort implements RegistryPort {
   }
 }
 
-/** A `RegistryPort` whose `updateReputation` throws, standing in for `@assay/registry`'s real ENS adapter today ("updateReputation is tracked in #16"). */
-export class Issue16StubRegistryPort implements RegistryPort {
+/**
+ * A `RegistryPort` whose `updateReputation` always throws. `@assay/registry`'s
+ * real ENS adapter has `updateReputation` (#16) fully implemented as a live
+ * Sepolia read-modify-write (see `ens-registry.ts`), so this is not modeling
+ * any current limitation of that adapter, it models the one failure mode any
+ * real write can still have (RPC error, out-of-range value, dropped
+ * transaction, etc.), so `live-node.test.ts` can assert `challenge`/`rate`
+ * surface such a failure as a clear, named error instead of a silent success.
+ */
+export class FailingUpdateReputationRegistryPort implements RegistryPort {
   constructor(private readonly seeded: ProviderRecord) {}
 
   async resolveProvider(name: string): Promise<ProviderRecord> {
@@ -72,11 +80,11 @@ export class Issue16StubRegistryPort implements RegistryPort {
   }
 
   async publishManifest(): Promise<{ txHash: string }> {
-    throw new Error('Issue16StubRegistryPort: publishManifest not used by these tests');
+    throw new Error('FailingUpdateReputationRegistryPort: publishManifest not used by these tests');
   }
 
   async updateReputation(): Promise<{ txHash: string; reputation: Reputation }> {
-    throw new Error('updateReputation is tracked in #16');
+    throw new Error('simulated ENS updateReputation write failure');
   }
 }
 

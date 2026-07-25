@@ -59,8 +59,34 @@ export class MirrorNodeTimeoutError extends Error {
 }
 
 type MirrorNodeTransactionsResponse = {
-  transactions?: Array<{ result: string }>;
+  transactions?: Array<{
+    result: string;
+    transfers?: Array<{ account: string; amount: number }>;
+    memo_base64?: string | null;
+  }>;
 };
+
+/** One account's tinybar delta in a transaction's transfer list (negative for the payer). */
+export type MirrorNodeTransfer = {
+  accountId: string;
+  amountTinybars: number;
+};
+
+/**
+ * The full shape `pollMirrorNodeTransaction` resolves once the transaction is
+ * final: not just whether it succeeded, but what it actually moved, so a
+ * caller (see `@assay/core`'s `serve()`) can check the transaction was for the
+ * amount, recipient, and memo it expects instead of trusting any SUCCESS tx.
+ */
+export type MirrorNodeTransactionDetail = {
+  state: 'success' | 'failed';
+  transfers: MirrorNodeTransfer[];
+  /** Decoded from `memo_base64`; `''` when the transaction carried no memo. */
+  memo: string;
+};
+
+/** 1 HBAR = 100,000,000 tinybars. */
+export const TINYBARS_PER_HBAR = 100_000_000;
 
 /**
  * Converts an SDK-format transaction id ("0.0.1234@1690000000.123456789") to
@@ -83,14 +109,21 @@ export function toMirrorNodeTransactionId(txId: string): string {
 }
 
 /**
- * Polls the mirror node for `txId` until it is final or `timeoutMs` elapses.
- *
- * Resolves `true` when the mirror node reports `result: "SUCCESS"`, `false`
- * when it reports any other final result (the tx landed but failed), and
- * rejects with `MirrorNodeTimeoutError` when the mirror node never surfaces
- * the transaction (a 404, i.e. "pending") within the timeout.
+ * Polls the mirror node for `txId` until it is final or `timeoutMs` elapses,
+ * resolving the full transaction detail (state, transfers, memo). Rejects
+ * with `MirrorNodeTimeoutError` when the mirror node never surfaces the
+ * transaction (a 404, i.e. "pending") within the timeout. `pollMirrorNode`
+ * (below) is a thin boolean-only wrapper over this for callers that only ever
+ * needed the SUCCESS/failed distinction; `createHederaPaymentsPort`'s
+ * `confirmPayment` (see ../payments.ts) is the caller that needs the rest —
+ * it checks a payment's actual amount, recipient, and memo before treating it
+ * as having paid for anything (issue: hedera-F1, payment-gating used to check
+ * only SUCCESS/failure).
  */
-export async function pollMirrorNode(txId: string, config: MirrorNodePollConfig): Promise<boolean> {
+export async function pollMirrorNodeTransaction(
+  txId: string,
+  config: MirrorNodePollConfig,
+): Promise<MirrorNodeTransactionDetail> {
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const intervalMs = config.intervalMs ?? DEFAULT_INTERVAL_MS;
   const sleep = config.sleepImpl ?? defaultSleep;
@@ -109,7 +142,12 @@ export async function pollMirrorNode(txId: string, config: MirrorNodePollConfig)
       if (tx) {
         const state: MirrorNodePollState = tx.result === 'SUCCESS' ? 'success' : 'failed';
         config.onAttempt?.({ attempt, elapsedMs: Date.now() - start, state });
-        return state === 'success';
+        const transfers: MirrorNodeTransfer[] = (tx.transfers ?? []).map((t) => ({
+          accountId: t.account,
+          amountTinybars: t.amount,
+        }));
+        const memo = tx.memo_base64 ? Buffer.from(tx.memo_base64, 'base64').toString('utf8') : '';
+        return { state: state === 'success' ? 'success' : 'failed', transfers, memo };
       }
     }
 
@@ -121,4 +159,17 @@ export async function pollMirrorNode(txId: string, config: MirrorNodePollConfig)
     }
     await sleep(intervalMs);
   }
+}
+
+/**
+ * Polls the mirror node for `txId` until it is final or `timeoutMs` elapses.
+ *
+ * Resolves `true` when the mirror node reports `result: "SUCCESS"`, `false`
+ * when it reports any other final result (the tx landed but failed), and
+ * rejects with `MirrorNodeTimeoutError` when the mirror node never surfaces
+ * the transaction (a 404, i.e. "pending") within the timeout.
+ */
+export async function pollMirrorNode(txId: string, config: MirrorNodePollConfig): Promise<boolean> {
+  const detail = await pollMirrorNodeTransaction(txId, config);
+  return detail.state === 'success';
 }

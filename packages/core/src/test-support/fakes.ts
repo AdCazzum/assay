@@ -10,7 +10,7 @@
  * integration it stands in for.
  */
 
-import type { GraphPort, PaymentsPort, RegistryPort, TokenSignals } from '../ports.js';
+import type { GraphPort, PaymentConfirmation, PaymentsPort, RegistryPort, TokenSignals } from '../ports.js';
 import type { Manifest, ProviderRecord, Reputation } from '../types.js';
 
 /** Thrown by `FakeRegistryPort` when asked to resolve a name nobody seeded or published. */
@@ -120,6 +120,15 @@ export type FakePaymentsPortOptions = {
    * this is how tests drive the payment gate.
    */
   confirmedTxIds?: Iterable<string>;
+  /**
+   * Set `false` to build a fake that implements only the bare `confirm()`,
+   * not `confirmPayment` — i.e. a `PaymentsPort` that has not adopted the
+   * amount/memo/recipient check (hedera-F1). This is how `node.test.ts`
+   * proves `serve()`'s fallback branch still gates on *something* rather than
+   * silently no-op'ing when a port lacks `confirmPayment`. Defaults `true`
+   * (real adapters should implement it, so the default fake does too).
+   */
+  supportConfirmPayment?: boolean;
 };
 
 /**
@@ -129,10 +138,13 @@ export type FakePaymentsPortOptions = {
 export class FakePaymentsPort implements PaymentsPort {
   readonly payCalls: Array<{ amountHbar: number; requestHash: string }> = [];
   readonly confirmCalls: string[] = [];
+  readonly confirmPaymentCalls: Array<{ txId: string; expectedAmountHbar: number; expectedMemo: string }> = [];
   readonly postBondCalls: number[] = [];
   readonly slashCalls: Array<{ bondRef: string; toChallenger: string }> = [];
   private readonly confirmed: Set<string>;
   private readonly autoConfirm: boolean;
+  /** What each `pay()`-minted txId was actually paid: amount and memo, for `confirmPayment` to check against. */
+  private readonly paidAs = new Map<string, { amountHbar: number; memo: string }>();
   private paySeq = 0;
   private bondSeq = 0;
   /**
@@ -153,6 +165,22 @@ export class FakePaymentsPort implements PaymentsPort {
   constructor(opts: FakePaymentsPortOptions = {}) {
     this.autoConfirm = opts.confirmedTxIds === undefined;
     this.confirmed = new Set(opts.confirmedTxIds ?? []);
+    if (opts.supportConfirmPayment ?? true) {
+      this.confirmPayment = async ({ txId, expectedAmountHbar, expectedMemo }) => {
+        this.confirmPaymentCalls.push({ txId, expectedAmountHbar, expectedMemo });
+        if (!this.confirmed.has(txId)) {
+          return { confirmed: false, reason: 'unsuccessful' };
+        }
+        const paid = this.paidAs.get(txId);
+        if (!paid || paid.amountHbar < expectedAmountHbar) {
+          return { confirmed: false, reason: 'amount-too-low' };
+        }
+        if (paid.memo !== expectedMemo) {
+          return { confirmed: false, reason: 'memo-mismatch' };
+        }
+        return { confirmed: true };
+      };
+    }
   }
 
   /** Marks `txId` confirmed (or explicitly not), e.g. to simulate a mirror-node confirmation landing after a retry. */
@@ -166,6 +194,7 @@ export class FakePaymentsPort implements PaymentsPort {
     this.payCalls.push({ amountHbar, requestHash });
     this.paySeq += 1;
     const txId = `0xfake-pay-${this.paySeq}`;
+    this.paidAs.set(txId, { amountHbar, memo: requestHash });
     if (this.autoConfirm) {
       this.confirmed.add(txId);
     }
@@ -176,6 +205,12 @@ export class FakePaymentsPort implements PaymentsPort {
     this.confirmCalls.push(txId);
     return this.confirmed.has(txId);
   }
+
+  confirmPayment?: (input: {
+    txId: string;
+    expectedAmountHbar: number;
+    expectedMemo: string;
+  }) => Promise<PaymentConfirmation>;
 
   async postBond(amountHbar: number): Promise<{ bondRef: string; txId: string }> {
     this.postBondCalls.push(amountHbar);

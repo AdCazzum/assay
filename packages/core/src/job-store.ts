@@ -48,6 +48,29 @@ export class UnknownJobError extends Error {
   }
 }
 
+/**
+ * Thrown by `create()` when `input.paymentTx` was already consumed by a prior
+ * job in this store. A Hedera transaction id must fund exactly one served
+ * job: without this check, the same confirmed `txId` could be replayed
+ * against an unlimited number of different `capabilityId`/`request` pairs
+ * (hedera-F1) since nothing previously indexed jobs by the payment that paid
+ * for them.
+ */
+export class DuplicatePaymentTxError extends Error {
+  readonly txId: string;
+  readonly existingJobId: string;
+
+  constructor(txId: string, existingJobId: string) {
+    super(
+      `Payment "${txId}" already funded job "${existingJobId}"; refusing to serve a second job ` +
+        'against the same transaction.',
+    );
+    this.name = 'DuplicatePaymentTxError';
+    this.txId = txId;
+    this.existingJobId = existingJobId;
+  }
+}
+
 /** Thrown when a transition is not reachable from the job's current status. */
 export class IllegalJobTransitionError extends Error {
   readonly jobId: string;
@@ -73,7 +96,12 @@ export class IllegalJobTransitionError extends Error {
 export type CreateJobInput = Omit<Job, 'jobId' | 'status' | 'verdict'>;
 
 export interface JobStore {
-  /** Creates a job already in `served` status. This is the only way a job enters the store. */
+  /**
+   * Creates a job already in `served` status. This is the only way a job
+   * enters the store. Throws `DuplicatePaymentTxError` if `input.paymentTx`
+   * already funded an earlier job in this store: a payment transaction is
+   * consumed exactly once.
+   */
   create(input: CreateJobInput): Job;
   /** Reads a job by id. Throws `UnknownJobError` if it does not exist. */
   get(jobId: string): Job;
@@ -93,6 +121,7 @@ export interface JobStore {
 /** Creates an empty, in-memory job store. Each instance has its own job-id sequence and its own jobs. */
 export function createJobStore(): JobStore {
   const jobs = new Map<string, Job>();
+  const jobIdByPaymentTx = new Map<string, string>();
   let seq = 0;
 
   function requireJob(jobId: string): Job {
@@ -105,10 +134,15 @@ export function createJobStore(): JobStore {
 
   return {
     create(input) {
+      const existingJobId = jobIdByPaymentTx.get(input.paymentTx);
+      if (existingJobId) {
+        throw new DuplicatePaymentTxError(input.paymentTx, existingJobId);
+      }
       seq += 1;
       const jobId = `job-${seq}`;
       const job: Job = { ...input, jobId, status: 'served' };
       jobs.set(jobId, job);
+      jobIdByPaymentTx.set(input.paymentTx, jobId);
       return { ...job };
     },
 
