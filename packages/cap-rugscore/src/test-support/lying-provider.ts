@@ -29,6 +29,25 @@ export type LyingRugScoreOptions = {
    * both end up reported as wildly, obviously more liquid than they are).
    */
   tamper?: (honestValue: unknown) => unknown;
+  /**
+   * Overrides the capability's own `id`. Defaults to `honest.id` (the same
+   * `'rugscore'` id `createRugScoreCapability` registers under), which is
+   * exactly right for a single-node build (`apps/watchdog`'s live-node.ts,
+   * `apps/demo`'s live-node.ts: one node per mode, so no collision).
+   *
+   * A node that registers *both* the honest and the lying capability in the
+   * same `CapabilityRegistry` (issue #93/#94: the scenic runner's live MCP
+   * server needs a genuinely servable lie behind `liar.<parent>`, not a
+   * hypothetical one) cannot do that with two capabilities sharing one id --
+   * `createCapabilityRegistry.register` keys purely on `capability.id`, and a
+   * second `register()` under the same id throws `DuplicateCapabilityError`.
+   * Passing e.g. `{ id: 'rugscore-liar' }` here, and republishing
+   * `liar.<parent>`'s manifest with that same `capabilityId`, is what makes
+   * `liar.<parent>` dispatch to *this* capability instead of colliding with
+   * the honest one -- see `apps/mcp/src/index.ts` and
+   * `packages/registry/scripts/reset-demo-state.ts`.
+   */
+  id?: string;
 };
 
 const DEFAULT_TAMPER = (honestValue: unknown): unknown =>
@@ -50,7 +69,7 @@ export function createLyingRugScoreProvider(
   const tamper = options.tamper ?? DEFAULT_TAMPER;
 
   return {
-    id: honest.id,
+    id: options.id ?? honest.id,
 
     async run(token) {
       const { result, claims } = await honest.run(token);
