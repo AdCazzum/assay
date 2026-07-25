@@ -23,13 +23,14 @@ const inputSchema = {
  * this records completion, not a subjective star rating, so use `challenge`
  * instead whenever a specific claim looks objectively false.
  *
- * Wired against the real node (issue #46), `rate` still fails with a clear,
- * named error against `@assay/registry`'s live ENS adapter: `updateReputation`
- * (the write this needs) is itself an explicit stub until #16 lands. The job
- * itself does close out for real: `rate` moves it `served -> settled` (with
- * no `verdict`, distinguishing "nobody challenged it" from a challenge that
- * failed) through the `JobStore` transition #26/#27 added — see
- * `live-node.ts`'s `rate` doc comment.
+ * Wired against the real node (issue #46): `rate` moves the job
+ * `served -> settled` (with no `verdict`, distinguishing "nobody challenged
+ * it" from a challenge that failed) through the `JobStore` transition
+ * #26/#27 added, then calls `@assay/registry`'s live ENS adapter's
+ * `updateReputation` (#16, implemented), which writes the reputation change
+ * to Sepolia for real. If that write itself fails (RPC error, out-of-range
+ * value, etc.), `rate` still surfaces a clear, named error rather than a
+ * fake success, see `live-node.ts`'s `rate` doc comment.
  */
 export function registerRateTool(server: McpServer, node: AssayNodePort): void {
   server.registerTool(

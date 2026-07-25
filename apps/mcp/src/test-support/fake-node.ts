@@ -99,9 +99,9 @@ export const FIXTURE_JOB: Job = {
   paymentTx: '0.0.9695801@1234567890.000000001',
   result: { score: 12 },
   claims: [
-    { k: 'top10Pct', v: 62, atBlock: 1000 },
     { k: 'liquidityUsd', v: 4200, atBlock: 1000 },
-    { k: 'hasActiveMintRole', v: true, atBlock: 1000 },
+    { k: 'topPoolConcentrationPct', v: 62, atBlock: 1000 },
+    { k: 'ageBlocks', v: 500, atBlock: 1000 },
   ],
   status: 'served',
 };

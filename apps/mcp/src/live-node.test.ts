@@ -3,10 +3,10 @@ import { createCapabilityRegistry, createJobStore, PayDeclinedError, ReputationU
 import type { Capability, Manifest, ProviderRecord } from '@assay/core';
 import { createLiveAssayNode, RateNotApplicableError } from './live-node.js';
 import {
+  FailingUpdateReputationRegistryPort,
   FakeGraphPort,
   FakePaymentsPort,
   FakeRegistryPort,
-  Issue16StubRegistryPort,
   type FakePaymentsPortOptions,
 } from './test-support/live-ports.js';
 
@@ -157,8 +157,8 @@ describe('createLiveAssayNode', () => {
       expect(updated.reputation.score).toBeGreaterThan(80);
     });
 
-    it('surfaces the real registry adapter\'s #16 stub as a clear, named error rather than a fake success', async () => {
-      const registry = new Issue16StubRegistryPort({
+    it('still surfaces a clear, named error if updateReputation itself fails, rather than a fake success', async () => {
+      const registry = new FailingUpdateReputationRegistryPort({
         name: PROVIDER_NAME,
         manifest,
         reputation: { score: 80, jobs: 20, slashes: 0, bondHbar: 50 },
@@ -181,7 +181,7 @@ describe('createLiveAssayNode', () => {
 
       const error = await node.challenge(job.jobId, 'echoedLength').catch((err: unknown) => err);
       expect(error).toBeInstanceOf(ReputationUpdateFailedError);
-      expect((error as Error).message).toMatch(/#16/);
+      expect((error as Error).message).toMatch(/simulated ENS updateReputation write failure/);
       // the money/reputation-decision side already happened and was recorded truthfully
       // (this challenge held up, so no slash): only the ENS write failed.
       expect(jobs.get(job.jobId).status).toBe('settled');
@@ -226,8 +226,8 @@ describe('createLiveAssayNode', () => {
       expect(updated.reputation.score).toBe(80);
     });
 
-    it('surfaces the real registry adapter\'s #16 stub as a clear, named error rather than a fake success', async () => {
-      const registry = new Issue16StubRegistryPort({
+    it('still surfaces a clear, named error if updateReputation itself fails, rather than a fake success', async () => {
+      const registry = new FailingUpdateReputationRegistryPort({
         name: PROVIDER_NAME,
         manifest,
         reputation: { score: 80, jobs: 20, slashes: 0, bondHbar: 50 },
@@ -241,7 +241,7 @@ describe('createLiveAssayNode', () => {
 
       const job = await node.payAndCall(PROVIDER_NAME, 'hello');
 
-      await expect(node.rate(job.jobId, true)).rejects.toThrow(/#16/);
+      await expect(node.rate(job.jobId, true)).rejects.toThrow(/simulated ENS updateReputation write failure/);
     });
   });
 });

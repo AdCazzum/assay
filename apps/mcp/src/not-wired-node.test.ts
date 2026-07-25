@@ -7,7 +7,7 @@ describe('NotWiredAssayNode', () => {
 
     await expect(node.discover('rugscore')).rejects.toThrow(NodeNotWiredError);
     await expect(node.payAndCall('rugscore', '0xTOKEN')).rejects.toThrow(NodeNotWiredError);
-    await expect(node.challenge('job-1', 'hasActiveMintRole')).rejects.toThrow(NodeNotWiredError);
+    await expect(node.challenge('job-1', 'liquidityUsd')).rejects.toThrow(NodeNotWiredError);
     await expect(node.rate('job-1', true)).rejects.toThrow(NodeNotWiredError);
   });
 
