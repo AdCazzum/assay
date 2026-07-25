@@ -1,3 +1,6 @@
+import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -115,5 +118,44 @@ describe('createLoopEventSink (issue #93)', () => {
 
     process.removeListener('uncaughtException', onUncaught);
     expect(uncaught).toBeUndefined();
+  });
+});
+
+describe('a sink that cannot write says so', () => {
+  it('creates a missing parent directory rather than going silently dark', async () => {
+    // The failure that actually happened on a live run: a relative path plus
+    // `pnpm --filter exec`'s package-directory cwd meant the parent did not
+    // exist, so every write was a silent no-op for the whole run.
+    const dir = mkdtempSync(join(tmpdir(), 'assay-sink-'));
+    const nested = join(dir, 'deep', 'deeper', 'loop-events.ndjson');
+    const stamp = createEventStamper();
+    const sink = createLoopEventSink(nested, stamp);
+    sink.sinkLoopEvent(stamp({ step: 'discover', outcome: 'ok', name: 'x.assay.eth', provider: {} as never }));
+    await closeAndWait(sink);
+    expect(existsSync(nested)).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reports on stderr when it cannot open the path, never on stdout', () => {
+    // stdout is the MCP JSON-RPC channel; a byte there corrupts the protocol.
+    const errs: string[] = [];
+    const outs: string[] = [];
+    const origErr = process.stderr.write;
+    const origOut = process.stdout.write;
+    process.stderr.write = ((s: string) => { errs.push(String(s)); return true; }) as never;
+    process.stdout.write = ((s: string) => { outs.push(String(s)); return true; }) as never;
+    try {
+      // A path whose parent cannot be created: an existing file used as a dir.
+      const dir = mkdtempSync(join(tmpdir(), 'assay-sink-'));
+      const blocker = join(dir, 'not-a-dir');
+      writeFileSync(blocker, 'x');
+      createLoopEventSink(join(blocker, 'loop-events.ndjson'), createEventStamper());
+      rmSync(dir, { recursive: true, force: true });
+    } finally {
+      process.stderr.write = origErr;
+      process.stdout.write = origOut;
+    }
+    expect(errs.join('')).toMatch(/loop-event sink/);
+    expect(outs.join('')).toBe('');
   });
 });

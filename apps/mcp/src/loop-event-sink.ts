@@ -40,7 +40,8 @@
  * `live-node.ts`'s synthetic `rate()` ones.
  */
 
-import { createWriteStream, type WriteStream } from 'node:fs';
+import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import type { EnsWriteAttemptState } from '@assay/registry';
 import type { LoopEvent, LoopEventVariant } from '@assay/core';
 
@@ -143,6 +144,12 @@ export function createLoopEventSink(
   let broken = false;
   let stream: WriteStream;
   try {
+    // Create the parent directory rather than treating a missing one as a
+    // broken sink. This is the failure that actually happened: the configured
+    // path was relative, `pnpm --filter exec` runs with cwd at the package
+    // directory rather than the repo root, so the parent did not exist and
+    // every write became a silent no-op for a whole live run.
+    mkdirSync(dirname(path), { recursive: true });
     stream = createWriteStream(path, { flags: 'a' });
   } catch {
     // Synchronous construction failure (e.g. the parent directory does not
@@ -151,9 +158,21 @@ export function createLoopEventSink(
     broken = true;
     stream = null as unknown as WriteStream;
   }
-  stream?.on('error', () => {
+  stream?.on('error', (err) => {
     broken = true;
+    // stderr, never stdout: stdout is the MCP JSON-RPC channel. Saying nothing
+    // was the real defect here, not the failure itself. "Never throws" is the
+    // right behaviour for a narration sink; "never mentions it" means a
+    // misconfigured sink looks identical to a working one, which is how a whole
+    // live run went unrecorded.
+    process.stderr.write(`[assay] loop-event sink failed, narration is off: ${err.message}\n`);
   });
+
+  if (broken) {
+    process.stderr.write(`[assay] loop-event sink could not open "${path}", narration is off\n`);
+  } else {
+    process.stderr.write(`[assay] loop-event sink writing to ${resolve(path)}\n`);
+  }
 
   function writeLine(line: Record<string, unknown>): void {
     if (broken) return;
