@@ -23,10 +23,12 @@
  * (verdict) then `AssayNode.settle` (slash-or-reputation-rise) and returns the
  * final job, `NodePort`'s documented contract. Against the real adapters this
  * can still fail honestly: `@assay/registry`'s live ENS adapter's
- * `updateReputation` is `#16`'s own not-yet-built piece, so a real challenge
- * against it surfaces core's `ReputationUpdateFailedError` (wrapping the #16
- * stub's error) rather than silently succeeding — same "fail with a clear,
- * named message" posture `rate` below already has for the same reason.
+ * `updateReputation` is a real read-modify-write against Sepolia (#57), not a
+ * stub, but a real network write can genuinely fail (an unowned name, an RPC
+ * hiccup, a write that never mines), so a real challenge against it can still
+ * surface core's `ReputationUpdateFailedError` (wrapping that failure) rather
+ * than silently succeeding — same "fail with a clear, named message" posture
+ * `rate` below already has for the same reason.
  *
  * `rate` (issue #46's second open question) is implemented as far as the
  * existing core API allows — see its doc comment below for exactly what core
@@ -159,11 +161,11 @@ export function createLiveAssayNode(config: LiveAssayNodeConfig): AssayNodePort 
      *    now regardless of whether the reputation write below succeeds.
      *  - It then calls `registry.updateReputation(...)`, the real
      *    `RegistryPort` method this is supposed to drive. Against
-     *    `@assay/registry`'s live ENS adapter that call throws today
-     *    ("updateReputation is tracked in #16") — this file does not paper
-     *    over that; it is the same "fail with a clear, named message until
-     *    the tracked issue lands" posture `challenge` has for its own #16
-     *    dependency.
+     *    `@assay/registry`'s live ENS adapter that call is a genuine ENS
+     *    read-modify-write (#57), not a stub, but it can still fail for real
+     *    reasons (an unowned name, an RPC/mining hiccup) — this file does not
+     *    paper over that; it is the same "fail with a clear, named message"
+     *    posture `challenge` has above.
      */
     async rate(jobId, satisfied, _comment) {
       const job = node.jobs.get(jobId);

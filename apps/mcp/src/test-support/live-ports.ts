@@ -62,7 +62,15 @@ export class FakeRegistryPort implements RegistryPort {
   }
 }
 
-/** A `RegistryPort` whose `updateReputation` throws, standing in for `@assay/registry`'s real ENS adapter today ("updateReputation is tracked in #16"). */
+/**
+ * A `RegistryPort` whose `updateReputation` always throws. The name is a
+ * holdover from before #57 shipped: `@assay/registry`'s real ENS adapter's
+ * `updateReputation` is not a stub any more, it is a genuine read-modify-write
+ * against Sepolia. This fixture now stands in for that real call failing for
+ * a real reason (an unowned name, an RPC/mining hiccup), so
+ * `live-node.test.ts` can assert `challenge`/`rate` surface such a failure
+ * honestly (`ReputationUpdateFailedError`) instead of swallowing it.
+ */
 export class Issue16StubRegistryPort implements RegistryPort {
   constructor(private readonly seeded: ProviderRecord) {}
 
