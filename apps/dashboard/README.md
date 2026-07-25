@@ -93,5 +93,20 @@ what a step that never fires looks like on screen.
 - No live wiring to `@assay/core`/apps/mcp/apps/watchdog: whichever of those
   lands the real loop needs to emit `LoopEvent`s that shape as it runs. This
   package only defines the shape and the renderer.
+  - What `@assay/core` now offers for exactly that (issue #53): `settle()`
+    runs the Hedera slash and the ENS reputation write concurrently and
+    reports both legs' progress through `AssayNodeConfig.onSettleProgress`
+    (`'slashing'`/`'writing-reputation'` fire together, then each leg's own
+    `-confirmed`/`-failed` tick fires the moment *that* leg lands, independent
+    of the other). Paired with `@assay/registry`'s own
+    `onReputationWriteAttempt` (submitted/pending-heartbeat/confirmed, bound
+    at `createEnsRegistry` construction), whoever wires the live loop has
+    everything needed to drive the `slash`/`reputation` steps below exactly
+    like `fixtures/slash.ts` already renders them: `slash` flips to `ok` early
+    while `reputation` keeps narrating heartbeats, then `reputation` lands.
+    Verified live against real Sepolia/Hedera testnet transactions while
+    building #53 (see that PR's `live_evidence`), by mapping those two hooks'
+    ticks onto this package's own `LoopEvent`/`attach()` with no changes
+    needed here — this package's renderer was already generic enough.
 - No color-scheme/theming beyond the four ANSI colors used; not needed for a
   36h build.

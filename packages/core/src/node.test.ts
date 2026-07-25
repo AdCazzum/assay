@@ -9,6 +9,9 @@ import {
   type RegisterProgress,
   ReputationInitFailedError,
   ReputationUpdateFailedError,
+  SettlementInProgressError,
+  type SettleProgress,
+  SlashFailedError,
   UnknownClaimError,
 } from './node.js';
 import { PayDeclinedError } from './pay-policy.js';
@@ -100,6 +103,7 @@ async function buildServedNode(
     verify?: EchoVerify;
     reputation?: Partial<Reputation>;
     challengerAccountId?: string | null;
+    onSettleProgress?: (info: SettleProgress) => void;
   } = {},
 ) {
   const registry = new FakeRegistryPort().seed(PROVIDER_NAME, {
@@ -116,6 +120,7 @@ async function buildServedNode(
     payments,
     graph,
     capabilities,
+    onSettleProgress: opts.onSettleProgress,
     challengerAccountId: opts.challengerAccountId === null ? undefined : (opts.challengerAccountId ?? CHALLENGER_ACCOUNT_ID),
   });
 
@@ -351,14 +356,16 @@ describe('createAssayNode: challenge (#26)', () => {
   });
 });
 
-describe('createAssayNode: settle (#27)', () => {
+describe('createAssayNode: settle (#27, concurrency #53)', () => {
   const lieVerdict: Verdict = { valid: false, badClaim: 'echoedLength', reason: 'the length was fabricated' };
   const trueVerdict: Verdict = { valid: true };
 
-  it('an invalid verdict slashes the bond to the challenger and drops the provider\'s ENS reputation, moving the job to slashed', async () => {
+  it('an invalid verdict slashes the bond to the challenger and drops the provider\'s ENS reputation concurrently, moving the job to slashed (both legs succeed)', async () => {
+    const progress: SettleProgress[] = [];
     const { node, registry, payments, job } = await buildServedNode({
       verify: async () => lieVerdict,
       reputation: { score: 80, jobs: 3, slashes: 0, bondHbar: 50 },
+      onSettleProgress: (info) => progress.push(info),
     });
     const verdict = await node.challenge(job.jobId, 'echoedLength');
 
@@ -375,6 +382,31 @@ describe('createAssayNode: settle (#27)', () => {
     expect(updated.reputation).toEqual({ ...expectedDelta, bondHbar: 50 });
     expect(updated.reputation.score).toBeLessThan(80);
     expect(updated.reputation.slashes).toBe(1);
+
+    // Proof the two legs actually start together, not one after the other:
+    // both `'slashing'` and `'writing-reputation'` are reported before either
+    // network call has had a chance to resolve.
+    const phases = progress.map((p) => p.phase);
+    expect(phases.indexOf('slashing')).toBeLessThan(phases.indexOf('slash-confirmed'));
+    expect(phases.indexOf('writing-reputation')).toBeLessThan(phases.indexOf('slash-confirmed'));
+    expect(phases).toContain('reputation-confirmed');
+    expect(phases[phases.length - 1]).toBe('done');
+  });
+
+  it('actually runs the slash and the ENS write concurrently, not sequentially: wall time is close to the slower leg, not their sum', async () => {
+    const { node, payments, registry, job } = await buildServedNode({ verify: async () => lieVerdict });
+    payments.slashDelayMs = 40;
+    registry.updateReputationDelayMs = 120;
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+
+    const start = Date.now();
+    await node.settle(job.jobId, verdict);
+    const elapsedMs = Date.now() - start;
+
+    // Sequential (the pre-#53 behaviour) would take >= 40 + 120 = 160ms.
+    // Concurrent takes ~= max(40, 120) = 120ms. Generous slack for CI jitter,
+    // but well under the sequential sum.
+    expect(elapsedMs).toBeLessThan(155);
   });
 
   it('a valid verdict fails the challenge, raises the provider\'s reputation, and never slashes, moving the job to settled', async () => {
@@ -418,6 +450,24 @@ describe('createAssayNode: settle (#27)', () => {
     expect(payments.slashCalls).toHaveLength(1);
   });
 
+  it('two settle() calls racing on the same still-"challenged" job (before either has transitioned it) never both slash: the second is rejected while the first is in flight', async () => {
+    const { node, payments, job } = await buildServedNode({ verify: async () => lieVerdict });
+    payments.slashDelayMs = 30;
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+
+    const first = node.settle(job.jobId, verdict);
+    // Fired while `first` is still in flight (job status still reads
+    // "challenged" -- this is exactly the gap `settlingJobIds` exists to
+    // close, see node.ts's doc comment on it).
+    const second = node.settle(job.jobId, verdict).catch((err) => err);
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult.status).toBe('slashed');
+    expect(secondResult).toBeInstanceOf(SettlementInProgressError);
+    expect(payments.slashCalls).toHaveLength(1);
+  });
+
   it('refuses to settle an invalid verdict with no challengerAccountId configured, before ever attempting a slash', async () => {
     const { node, payments, job } = await buildServedNode({
       verify: async () => lieVerdict,
@@ -446,19 +496,78 @@ describe('createAssayNode: settle (#27)', () => {
     expect(node.jobs.get(job.jobId).verdict).toEqual(lieVerdict);
   });
 
-  it('when the slash transaction itself fails, nothing is recorded and the job stays challenged, safe to retry', async () => {
-    const { node, payments, job } = await buildServedNode({ verify: async () => lieVerdict });
+  it('when the slash transaction itself fails and the concurrent ENS write also fails, nothing changed anywhere and the job stays challenged, safe to retry', async () => {
+    const { node, registry, payments, job } = await buildServedNode({ verify: async () => lieVerdict });
     const verdict = await node.challenge(job.jobId, 'echoedLength');
+    const reputationBefore = (await registry.resolveProvider(PROVIDER_NAME)).reputation;
     payments.slashError = new Error('Hedera testnet is congested');
+    registry.updateReputationError = new Error('Sepolia RPC timed out');
 
-    await expect(node.settle(job.jobId, verdict)).rejects.toThrow(/congested/);
+    let err!: SlashFailedError;
+    try {
+      await node.settle(job.jobId, verdict);
+      throw new Error('should have thrown');
+    } catch (caught) {
+      expect(caught).toBeInstanceOf(SlashFailedError);
+      err = caught as SlashFailedError;
+    }
+    expect(err.message).toMatch(/congested/);
+    expect(err.reputationWrite).toEqual({ outcome: 'failed', cause: expect.any(Error) });
 
     expect(node.jobs.get(job.jobId).status).toBe('challenged');
+    // ENS genuinely untouched: both legs failed, so nothing to reconcile.
+    expect((await registry.resolveProvider(PROVIDER_NAME)).reputation).toEqual(reputationBefore);
 
-    // and the retry (slashError cleared itself after firing once) succeeds cleanly
+    // the retry (both one-shot errors cleared themselves after firing once) succeeds cleanly
     const settled = await node.settle(job.jobId, verdict);
     expect(settled.status).toBe('slashed');
     expect(payments.slashCalls).toHaveLength(2);
+  });
+
+  it('when the slash transaction fails but the concurrent ENS write still succeeds, the job stays honestly "challenged" (no slash happened) even though ENS now shows one', async () => {
+    const { node, registry, payments, job } = await buildServedNode({
+      verify: async () => lieVerdict,
+      reputation: { score: 80, jobs: 3, slashes: 0, bondHbar: 50 },
+    });
+    const verdict = await node.challenge(job.jobId, 'echoedLength');
+    payments.slashError = new Error('Hedera testnet is congested');
+
+    let err!: SlashFailedError;
+    try {
+      await node.settle(job.jobId, verdict);
+      throw new Error('should have thrown');
+    } catch (caught) {
+      expect(caught).toBeInstanceOf(SlashFailedError);
+      err = caught as SlashFailedError;
+    }
+    expect(err.reputationWrite.outcome).toBe('succeeded');
+
+    // The job never claims a slash that did not happen.
+    expect(node.jobs.get(job.jobId).status).toBe('challenged');
+
+    // But ENS was never gated on the slash succeeding, so it already moved --
+    // the exact inconsistency `SlashFailedError` exists to name rather than hide.
+    const expectedDelta = computeSlashReputationDelta({ score: 80, jobs: 3, slashes: 0, bondHbar: 50 });
+    const afterFirstAttempt = await registry.resolveProvider(PROVIDER_NAME);
+    expect(afterFirstAttempt.reputation).toEqual({ ...expectedDelta, bondHbar: 50 });
+    if (err.reputationWrite.outcome === 'succeeded') {
+      expect(err.reputationWrite.reputation).toEqual(afterFirstAttempt.reputation);
+    }
+
+    // Retrying (slashError cleared itself after firing once) now lets the
+    // slash land for real, and the job correctly becomes "slashed" -- but
+    // the disclosed trade-off from running the two legs concurrently shows
+    // up here: the retry's reputation delta is computed off the *already
+    // written* (already-slashed-looking) ENS value, not the original 80, so
+    // the score ends up penalized twice for one real slash. This is the
+    // known, documented cost of #53's concurrency (see `SlashFailedError`'s
+    // doc comment), not a bug this test is hiding.
+    const settled = await node.settle(job.jobId, verdict);
+    expect(settled.status).toBe('slashed');
+    expect(payments.slashCalls).toHaveLength(2);
+    const afterRetry = await registry.resolveProvider(PROVIDER_NAME);
+    expect(afterRetry.reputation.slashes).toBe(2);
+    expect(afterRetry.reputation.score).toBeLessThan(afterFirstAttempt.reputation.score);
   });
 
   it('rejects an unknown job id', async () => {

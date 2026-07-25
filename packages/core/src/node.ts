@@ -152,6 +152,12 @@ export class SettlementInProgressError extends Error {
  * and durable in the store by the time this is thrown; only the ENS
  * reputation side effect still needs a retry (e.g. re-driving
  * `registry.updateReputation` directly with the same delta).
+ *
+ * On the invalid-verdict path (see `settle()`'s doc comment on why the slash
+ * and the ENS write now run concurrently, #53) this is only ever thrown when
+ * the slash itself *succeeded*: the job's `status` is real, durable
+ * `"slashed"` by the time this is constructed, exactly as before concurrency
+ * was introduced.
  */
 export class ReputationUpdateFailedError extends Error {
   readonly jobId: string;
@@ -169,6 +175,69 @@ export class ReputationUpdateFailedError extends Error {
     this.jobId = jobId;
     this.job = job;
     this.cause = cause;
+  }
+}
+
+/**
+ * What the ENS reputation write (fired concurrently with the Hedera slash,
+ * see `settle()`) did, carried on `SlashFailedError` so a caller reading
+ * "the slash failed" also learns whether the concurrent write already landed.
+ */
+export type ConcurrentReputationOutcome =
+  | { outcome: 'succeeded'; txHash: string; reputation: Reputation }
+  | { outcome: 'failed'; cause: unknown };
+
+/**
+ * Thrown by `settle()` on an invalid verdict when `payments.slash()` itself
+ * fails. Money never moved, so the job is left exactly as it was (still
+ * `"challenged"`), same as before this file ran the slash and the ENS write
+ * concurrently — a retry is always safe on the *job's* side.
+ *
+ * What is new since #53 (running the two legs concurrently to cut the
+ * post-verdict tail from ~17s to ~12.5s, see `settle()`'s doc comment): the
+ * ENS reputation write is no longer gated on the slash succeeding, so it can
+ * land even when the slash does not. `reputationWrite` names which of the
+ * two ways that goes:
+ *
+ *  - `{ outcome: 'failed' }` — nothing changed anywhere. The job stays
+ *    `"challenged"` and a plain retry of `settle()` is exactly as safe as it
+ *    always was.
+ *  - `{ outcome: 'succeeded' }` — ENS now shows a slash that did not actually
+ *    happen on Hedera (ahead of the money, not behind it). The job still
+ *    correctly stays `"challenged"` (nothing here pretends a slash happened
+ *    when it did not), but `"${providerName}"`'s published reputation is
+ *    temporarily inconsistent with the real Hedera state until this is
+ *    reconciled by hand or the slash is retried and lands for real. A later
+ *    `settle()` retry that then succeeds will compute its reputation delta
+ *    from whatever ENS holds *at that time* (already including this write),
+ *    so it will not silently double the penalty — but the ENS record between
+ *    now and that retry is honestly stale, not honestly current, and this
+ *    error is what says so.
+ */
+export class SlashFailedError extends Error {
+  readonly jobId: string;
+  readonly providerName: string;
+  readonly reputationWrite: ConcurrentReputationOutcome;
+  override readonly cause: unknown;
+
+  constructor(jobId: string, providerName: string, cause: unknown, reputationWrite: ConcurrentReputationOutcome) {
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    const reputationNote =
+      reputationWrite.outcome === 'succeeded'
+        ? ` The concurrent ENS reputation write for "${providerName}" already succeeded (tx ` +
+          `"${reputationWrite.txHash}"), so ENS now shows a slash that did not actually happen on ` +
+          'Hedera -- reconcile by hand, or retry settle(): a successful retry will compute its delta ' +
+          'off the reputation ENS already holds, not off the pre-write value.'
+        : ' The concurrent ENS reputation write also failed, so nothing changed anywhere; the job ' +
+          'stays "challenged" and a retry is safe.';
+    super(
+      `Job "${jobId}"'s Hedera slash failed for "${providerName}": ${causeMessage}.${reputationNote}`,
+    );
+    this.name = 'SlashFailedError';
+    this.jobId = jobId;
+    this.providerName = providerName;
+    this.cause = cause;
+    this.reputationWrite = reputationWrite;
   }
 }
 
@@ -315,6 +384,22 @@ export type AssayNodeConfig = {
    * narrate which of the three real transactions is currently in flight.
    */
   onRegisterProgress?: (info: RegisterProgress) => void;
+  /**
+   * Observability hook for `settle()` (issue #53). The two real legs it can
+   * run — `payments.slash()` (~4.1s measured) and `registry.updateReputation()`
+   * (~12.5s measured, three live samples so far) — start at the same time on
+   * an invalid verdict (see `settle()`'s doc comment on why), so a caller
+   * narrating this needs to know when *each* leg starts and finishes, not
+   * just one combined phase. `@assay/registry`'s own `onReputationWriteAttempt`
+   * (bound once at `createEnsRegistry` construction, same precedent as
+   * `onRegisterProgress` above) still fires for the ENS write's own
+   * submitted/pending-heartbeat/confirmed ticks; this hook is the settle-level
+   * complement, reporting when the write starts and how it (and the slash)
+   * concluded, so the dashboard's `slash` and `reputation` steps can both
+   * render `running` concurrently instead of the second one staying frozen
+   * until the first finishes.
+   */
+  onSettleProgress?: (info: SettleProgress) => void;
 };
 
 export type RegisterInput = {
@@ -350,6 +435,23 @@ export type RegisterProgress =
   | { phase: 'publishing-manifest'; elapsedMs: number; bondRef: string; bondTxId: string }
   | { phase: 'initializing-reputation'; elapsedMs: number; bondRef: string; manifestTxHash: string }
   | { phase: 'done'; elapsedMs: number; result: RegisterResult };
+
+/**
+ * Progress ticks `settle()` reports through `AssayNodeConfig.onSettleProgress`
+ * (issue #53). `elapsedMs` is measured from the start of this `settle()`
+ * call. On an invalid verdict, `'slashing'` and `'writing-reputation'` are
+ * both emitted immediately (elapsedMs ~0): the two legs start together, that
+ * is the whole point of #53. On a valid verdict there is no slash, so only
+ * the `'writing-reputation'`/`'reputation-*'` ticks fire.
+ */
+export type SettleProgress =
+  | { phase: 'slashing'; elapsedMs: number }
+  | { phase: 'writing-reputation'; elapsedMs: number }
+  | { phase: 'slash-confirmed'; elapsedMs: number; txId: string }
+  | { phase: 'slash-failed'; elapsedMs: number }
+  | { phase: 'reputation-confirmed'; elapsedMs: number; txHash: string; reputation: Reputation }
+  | { phase: 'reputation-failed'; elapsedMs: number }
+  | { phase: 'done'; elapsedMs: number; job: Job };
 
 export type ServeInput = {
   provider: string;
@@ -471,25 +573,45 @@ export interface AssayNode {
    * Settles an already-challenged job on `verdict` (SPEC.md §7 step 7, §9).
    *
    * - **Invalid** (the provider lied): slashes the provider's bond to
-   *   `config.challengerAccountId` on Hedera (a real transaction), moves the
-   *   job to `slashed`, then drops the provider's ENS reputation
-   *   (`computeSlashReputationDelta`).
+   *   `config.challengerAccountId` on Hedera (a real transaction) and drops
+   *   the provider's ENS reputation (`computeSlashReputationDelta`) **at the
+   *   same time** (issue #53) — the two are independent networks and neither
+   *   result feeds the other, so running them one after another only added a
+   *   silent ~12.5s wait after the money had already moved. See the
+   *   implementation's own doc comment for the measured numbers and exactly
+   *   how each outcome combination is handled.
    * - **Valid** (the challenge failed): moves the job to `settled`, then
    *   raises the provider's ENS reputation (`computeChallengeFailedReputationDelta`).
-   *   See `settlement-policy.ts` for why this does not also move a
-   *   challenger deposit: no deposit is ever taken anywhere in this build.
+   *   There is only one real network leg on this path (no slash), so nothing
+   *   here runs concurrently with it. See `settlement-policy.ts` for why this
+   *   does not also move a challenger deposit: no deposit is ever taken
+   *   anywhere in this build.
    *
-   * Ordering is deliberate and disclosed, not atomic (SPEC.md §9): the job
-   * moves out of `challenged` (recording the real, already-happened
-   * on-chain effect — the slash, or simply "no slash needed") *before* the
-   * ENS write is attempted. If that write then fails, `settle()` rejects
-   * with `ReputationUpdateFailedError`, but the job's `status`/`verdict` in
-   * the store are already correct and truthful; only the reputation side
-   * still needs a retry. Throws `JobNotSettleableError` if the job is not
-   * currently `challenged` (this is what makes a double-settle safe: the
-   * second call never reaches `payments.slash()` again), and
-   * `MissingChallengerAccountError` on an invalid verdict if no
-   * `challengerAccountId` was configured.
+   * **The property this protects, unchanged since before #53's concurrency:**
+   * the job's `status` always truthfully reflects whether the money-moving
+   * side (the slash, or simply "no slash needed" on a valid verdict) actually
+   * happened, regardless of what the ENS reputation write did. Concretely:
+   *
+   *  - Slash succeeds (or there is no slash to attempt): the job moves out of
+   *    `challenged` for real — to `slashed` or `settled` — before the ENS
+   *    write's own outcome is inspected. If that write then fails, `settle()`
+   *    rejects with `ReputationUpdateFailedError`, but the job's
+   *    `status`/`verdict` are already correct and durable; only the
+   *    reputation side needs a retry.
+   *  - Slash fails (invalid-verdict path only): the job is left exactly as it
+   *    was, still `challenged` — a retry is always safe. `settle()` rejects
+   *    with `SlashFailedError`, which also names what the *concurrent* ENS
+   *    write did (it can still have succeeded, since it was never gated on
+   *    the slash — see that error's doc comment for why that is disclosed
+   *    rather than hidden, and what it means for a subsequent retry).
+   *
+   * Throws `JobNotSettleableError` if the job is not currently `challenged`
+   * (this is what makes a double-settle safe: the second call never reaches
+   * `payments.slash()` again — payment idempotence, not just a store-status
+   * check), and `MissingChallengerAccountError` on an invalid verdict if no
+   * `challengerAccountId` was configured (checked before either network call
+   * is attempted). Progress is reported through
+   * `AssayNodeConfig.onSettleProgress` (see `SettleProgress`).
    */
   settle(jobId: string, verdict: Verdict): Promise<Job>;
 }
@@ -572,6 +694,10 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
     }
 
     settlingJobIds.add(jobId);
+    const start = Date.now();
+    const elapsed = () => Date.now() - start;
+    const onProgress = config.onSettleProgress;
+
     try {
       if (!verdict.valid) {
         if (!config.challengerAccountId) {
@@ -579,25 +705,86 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
         }
 
         const provider = await registry.resolveProvider(job.provider);
-        // The real, money-moving side effect: a Hedera transfer, not a
-        // simulated one. If this throws, nothing below runs and the job
-        // stays `challenged`, so a retry (once whatever failed is fixed) is
-        // safe.
-        await payments.slash(provider.manifest.bondRef, config.challengerAccountId);
+        const reputationDelta = computeSlashReputationDelta(provider.reputation, settlementPolicy);
 
-        // Recorded *before* the ENS write is attempted: the slash already
-        // happened for real, so the job must say so even if the reputation
-        // write below fails (SPEC.md §9's "not atomic across networks",
-        // made honest here rather than papered over).
+        // The Hedera slash and the ENS reputation write target two
+        // independent networks, and neither's outcome is an input to the
+        // other: `reputationDelta` above is computed entirely from
+        // `provider.reputation`, already read, not from anything
+        // `payments.slash()` returns. Measured live (#53): the slash settles
+        // in ~4.1s, the ENS write in ~12.5s (three samples: 24.6s, 12.59s,
+        // 12.39s -- the 24.6s looks like a cold-write outlier, not the
+        // baseline). Running them one after another put ~17s after the
+        // verdict, landing on the demo's closing beat in silence. Firing
+        // both at once cuts that tail to ~12.5s, the slower of the two, not
+        // their sum.
+        //
+        // The one thing this trades away: before #53, if `payments.slash()`
+        // threw, the ENS write was never even attempted, so "the slash
+        // failed" and "ENS was not touched" were the same fact. Now they can
+        // come apart -- the write can still land even though the slash did
+        // not, because both were already in flight. `SlashFailedError`
+        // below is what names that outcome so it is never ambiguous which
+        // of the two actually happened.
+        onProgress?.({ phase: 'slashing', elapsedMs: elapsed() });
+        onProgress?.({ phase: 'writing-reputation', elapsedMs: elapsed() });
+
+        // Both calls are made here, immediately, one right after the other
+        // with no `await` between them -- that is what actually starts them
+        // concurrently; a `Promise.allSettled([a(), b()])` one-liner would
+        // do the same thing, but it would also swallow *when* each one
+        // individually finishes (it only resolves once both have). Each
+        // promise gets its own `.then`/`.catch` below purely to report its
+        // own `-confirmed`/`-failed` tick the moment *it* settles (e.g. the
+        // slash landing at ~4.1s while the ENS write is still mining at
+        // ~12.5s, exactly like the dashboard's slash fixture narrates) --
+        // attaching a second handler here does not delay or re-trigger the
+        // underlying call.
+        const slashPromise = payments.slash(provider.manifest.bondRef, config.challengerAccountId);
+        const reputationPromise = registry.updateReputation(job.provider, reputationDelta);
+
+        slashPromise.then(
+          (result) => onProgress?.({ phase: 'slash-confirmed', elapsedMs: elapsed(), txId: result.txId }),
+          () => onProgress?.({ phase: 'slash-failed', elapsedMs: elapsed() }),
+        );
+        reputationPromise.then(
+          (result) =>
+            onProgress?.({
+              phase: 'reputation-confirmed',
+              elapsedMs: elapsed(),
+              txHash: result.txHash,
+              reputation: result.reputation,
+            }),
+          () => onProgress?.({ phase: 'reputation-failed', elapsedMs: elapsed() }),
+        );
+
+        const [slashOutcome, reputationOutcome] = await Promise.allSettled([slashPromise, reputationPromise]);
+
+        if (slashOutcome.status === 'rejected') {
+          const reputationWrite: ConcurrentReputationOutcome =
+            reputationOutcome.status === 'fulfilled'
+              ? {
+                  outcome: 'succeeded',
+                  txHash: reputationOutcome.value.txHash,
+                  reputation: reputationOutcome.value.reputation,
+                }
+              : { outcome: 'failed', cause: reputationOutcome.reason };
+          // Money never moved: the job is left exactly as it was, still
+          // `"challenged"`, whatever the concurrent ENS write did (see
+          // `SlashFailedError`'s doc comment on why that write's own outcome
+          // still matters even though the job itself does not change here).
+          throw new SlashFailedError(jobId, job.provider, slashOutcome.reason, reputationWrite);
+        }
+
+        // The real, money-moving side effect happened for real: record it
+        // regardless of what the concurrent ENS write did, same honesty
+        // `ReputationUpdateFailedError` has always protected (SPEC.md §9's
+        // "not atomic across networks").
         const slashed = jobs.transition(jobId, 'slashed', { verdict });
+        onProgress?.({ phase: 'done', elapsedMs: elapsed(), job: slashed });
 
-        try {
-          await registry.updateReputation(
-            job.provider,
-            computeSlashReputationDelta(provider.reputation, settlementPolicy),
-          );
-        } catch (cause) {
-          throw new ReputationUpdateFailedError(jobId, slashed, cause);
+        if (reputationOutcome.status === 'rejected') {
+          throw new ReputationUpdateFailedError(jobId, slashed, reputationOutcome.reason);
         }
 
         return slashed;
@@ -605,21 +792,27 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
 
       // Valid verdict: the challenge failed, the provider is vindicated. No
       // money moves (see settlement-policy.ts's doc comment on why a
-      // challenger deposit is not forfeited here); only the reputation goes
-      // up. Same "record the real state before the slow ENS write" ordering
+      // challenger deposit is not forfeited here) -- there is only the one
+      // real network leg here, so there is nothing to run concurrently with
+      // it. Same "record the real state before the slow ENS write" ordering
       // as the slash path, for the same honesty reason.
       const provider = await registry.resolveProvider(job.provider);
       const settled = jobs.transition(jobId, 'settled', { verdict });
 
+      onProgress?.({ phase: 'writing-reputation', elapsedMs: elapsed() });
       try {
-        await registry.updateReputation(
+        const { txHash, reputation } = await registry.updateReputation(
           job.provider,
           computeChallengeFailedReputationDelta(provider.reputation, settlementPolicy),
         );
+        onProgress?.({ phase: 'reputation-confirmed', elapsedMs: elapsed(), txHash, reputation });
       } catch (cause) {
+        onProgress?.({ phase: 'reputation-failed', elapsedMs: elapsed() });
+        onProgress?.({ phase: 'done', elapsedMs: elapsed(), job: settled });
         throw new ReputationUpdateFailedError(jobId, settled, cause);
       }
 
+      onProgress?.({ phase: 'done', elapsedMs: elapsed(), job: settled });
       return settled;
     } finally {
       settlingJobIds.delete(jobId);

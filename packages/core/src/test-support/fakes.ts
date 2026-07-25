@@ -51,6 +51,14 @@ export class FakeRegistryPort implements RegistryPort {
    * being reused as an untested fake.
    */
   updateReputationError?: Error;
+  /**
+   * If set, `updateReputation` waits this many milliseconds before writing
+   * (or throwing `updateReputationError`). Models the real ENS write's own
+   * latency (#53: ~12.5s live) just enough to let a test prove two ports are
+   * actually driven *concurrently* by `settle()`, not that a fake happens to
+   * resolve instantly either way.
+   */
+  updateReputationDelayMs?: number;
 
   /** Seeds `name` as already resolvable, as if registered before this test started. */
   seed(name: string, record: Omit<ProviderRecord, 'name'>): this {
@@ -85,6 +93,9 @@ export class FakeRegistryPort implements RegistryPort {
     name: string,
     delta: Partial<Reputation>,
   ): Promise<{ txHash: string; reputation: Reputation }> {
+    if (this.updateReputationDelayMs) {
+      await new Promise((resolve) => setTimeout(resolve, this.updateReputationDelayMs));
+    }
     if (this.updateReputationError) {
       const error = this.updateReputationError;
       this.updateReputationError = undefined;
@@ -130,6 +141,14 @@ export class FakePaymentsPort implements PaymentsPort {
    * transaction failing once without pretending the failure recurs forever.
    */
   slashError?: Error;
+  /**
+   * If set, `slash` waits this many milliseconds before transferring (or
+   * throwing `slashError`). Models the real Hedera slash's own latency
+   * (#53: ~4.1s live) just enough to let a test prove `settle()` actually
+   * drives `payments.slash()` and `registry.updateReputation()` concurrently,
+   * not that a fake happens to resolve instantly either way.
+   */
+  slashDelayMs?: number;
 
   constructor(opts: FakePaymentsPortOptions = {}) {
     this.autoConfirm = opts.confirmedTxIds === undefined;
@@ -166,6 +185,9 @@ export class FakePaymentsPort implements PaymentsPort {
 
   async slash(bondRef: string, toChallenger: string): Promise<{ txId: string }> {
     this.slashCalls.push({ bondRef, toChallenger });
+    if (this.slashDelayMs) {
+      await new Promise((resolve) => setTimeout(resolve, this.slashDelayMs));
+    }
     if (this.slashError) {
       const error = this.slashError;
       this.slashError = undefined;
