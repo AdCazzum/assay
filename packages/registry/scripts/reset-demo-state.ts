@@ -104,6 +104,28 @@ const MIRROR_NODE_BASE_URL: Record<HederaNetwork, string> = {
  * honest: the manifest should say where the service really is, and a public
  * URL we do not serve would be a worse lie than a loopback one.
  */
+/**
+ * Where `apps/provider` serves when it is running (`apps/provider/src/index.ts`:
+ * `PORT ?? 8787`, route `POST /serve`). Override with `DEMO_PROVIDER_ENDPOINT`.
+ *
+ * **Nothing dials this in the demo, and that is a deliberate choice rather than
+ * an oversight, so it is worth stating plainly here.** SPEC.md §4 models a
+ * provider as a separate long-running service and `Manifest.endpoint` is where a
+ * requester would reach it. `apps/provider` is that service and it works,
+ * including the payment gate that returns 402 without a confirmed payment.
+ *
+ * But the MCP server runs the capability **in-process** through its own
+ * `AssayNode`, the same way `apps/watchdog` does, because a demo that depends on
+ * a second process being up has one more thing that can be down on stage. So the
+ * capability is co-located and this field advertises an address the demo path
+ * never calls.
+ *
+ * It is kept, and kept truthful, because it is part of the manifest SPEC.md §5
+ * defines and a real deployment needs it. What it must not become is a public
+ * URL we do not serve, which would be a worse lie than a loopback one: the
+ * address is real for anyone who starts `apps/provider`, and honest about being
+ * local.
+ */
 const DEFAULT_PROVIDER_ENDPOINT = 'http://localhost:8787/serve';
 
 /**

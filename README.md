@@ -132,6 +132,14 @@ which job and claim to look at, where a real watchdog would decide on its own wh
 challenge. The challenge, the verifier, the slash and the ENS write in that path are all
 real.
 
+**The manifest's `endpoint` is a local address the demo never dials.** SPEC §4 models a
+provider as a separate long-running service, and `apps/provider` is that service: it works, and
+its payment gate returns 402 without a confirmed payment. But the MCP server runs the
+capability in-process, because a demo that needs a second process up has one more thing that
+can be down on stage. So the field is truthful (that is where the provider serves when it runs)
+and not load-bearing here. Making it a public URL we do not actually serve would be the worse
+lie.
+
 **Honest gaps.** A failed challenge should also cost the challenger a deposit (SPEC §7);
 there is no escrow to forfeit, so only the reputation half exists. Settlement is not
 atomic across three networks and the code does not pretend it is: the job's status is
