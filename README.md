@@ -101,9 +101,19 @@ policy rather than being blocked by it.
 
 Stated plainly because a submission that hides this deserves to lose:
 
-**Real.** Every value transfer on Hedera (payment, bond, slash). Every ENS read and write.
-Every Graph query, against mainnet data. The verifier's logic. The MCP server and the
-Claude agent driving it.
+**Real.** Every value transfer on Hedera (payment, bond, slash) is a real, signed,
+submitted, mirror-node-confirmed transaction. Every ENS read and write. Every Graph
+query, against mainnet data. The verifier's logic. The MCP server and the Claude agent
+driving it.
+
+**But only one funded testnet account exists.** Every Hedera transfer run so far,
+including in the demo runs and transcripts referenced above, is a self-transfer
+(`0.0.9695801 -> 0.0.9695801`): the transaction path is real, but there is no second
+account to act as payee, bond escrow, or challenger, so the bond/slash amount nets to
+zero and no HBAR actually leaves the operator's control net of fees. See
+`packages/payments/README.md` for the mirror-node evidence and the env vars
+(`SPIKE_PAY_TO_ACCOUNT_ID` / `SPIKE_BOND_ACCOUNT_ID` / `SPIKE_CHALLENGER_ACCOUNT_ID`) that
+would exercise a real second party once one is funded.
 
 **Staged, and disclosed on screen when it runs.** The "lying provider" is
 `createLyingRugScoreProvider`, a deliberately tampered test harness that runs the real
@@ -126,10 +136,11 @@ Worth knowing before believing any "instant" claim about either chain:
 |---|---|
 | Hedera payment, submit to mirror-node confirmed | **~4.1s** |
 | Hedera slash, transfer alone | **~0.4s** |
-| ENS text-record write, 7 samples | **12.4s to 24.6s**, median ~16.4s |
+| ENS text-record write, samples across two rehearsals | **8.3s to 24.6s**, median ~13s |
 
 The ENS spread is wide and does not converge, which matters more to a demo run sheet than
-the median does. See `docs/demo-run-sheet.md`.
+the median does; a later rehearsal pushed the low end down from 12.4s to 8.3s, which widens
+the range rather than narrowing it. See `docs/demo-run-sheet.md`.
 
 ## Reproducing this
 
