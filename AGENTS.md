@@ -25,20 +25,56 @@ packages/
   core         orchestrates the loop; knows nothing about rug-score
   registry     ENS adapter (Sepolia): manifest + reputation text records
   payments     Hedera adapter (testnet): pay / bond / slash / confirm
-  graph        The Graph Token API adapter (mainnet, read-only)
+  graph        The Graph adapter: block-pinned Uniswap v3 subgraph queries
   cap-rugscore the one concrete capability: run() + verify()
 apps/
-  mcp          MCP server exposing discover / pay_and_call / challenge / rate
-  provider     long-running agent that serves rug-score requests
-  watchdog     challenges a claim (the demo climax)
-  dashboard    narrates the loop on screen
+  mcp          MCP server, nine tools; what a real Claude Code session drives
+  provider     long-running service that serves rug-score requests
+  watchdog     challenges a claim from the command line
+  dashboard    renders the loop; also the offline fallback (replays fixtures)
 ```
+
+The MCP server is the product. `apps/provider` and `apps/watchdog` are runnable
+demonstrations of the two roles, and `apps/dashboard` is a renderer plus the
+no-network fallback. The demo itself is not an app in here: see below.
+
+## Running the demo
+
+Not a script and not an app in this repo. Open **Claude Code** here and run
+**`/assay-demo`**: `.mcp.json` registers the `assay` server, so a real session
+drives the real loop and renders its own reasoning and tool calls. Confirm with
+`claude mcp list`, which should report `assay: ... Connected`.
+
+```bash
+./scripts/demo.sh          # reset both providers first (~57s). Never on stage.
+bash -lc 'claude'          # then /assay-demo
+```
+
+Two earlier attempts (a keypress runner, then a custom terminal UI) were deleted.
+The reason worth keeping: **a renderer we write is less credible than the tool the
+audience already uses.** A judge cannot verify that our screen showed them the
+truth; in Claude Code they see the MCP badge, the real tool names, the arguments
+and the raw JSON.
+
+The prompt lives in `.claude/commands/assay-demo.md`. It sets a goal and a budget
+and **never names the provider to distrust, the claim to check, or when to
+challenge**. Keep it that way: a prompt that scripts the decision turns the demo
+into a performance, which SPEC §16 names as the failure to avoid.
+
+`pnpm --filter @assay/dashboard exec tsx src/index.ts slash` replays a captured
+run with no network at all, which is the fallback when the wifi dies.
 
 ## Runtimes
 
 - Node >= 22 (via mise), pnpm workspaces.
 - `mise` is not loaded in non-interactive shells: in scripted/tmux contexts run
   `eval "$(~/.local/bin/mise activate bash)"` first, or `pnpm`/`node` are not found.
+- **The two halves trap.** A live agent run needs `CLAUDE_CODE_OAUTH_TOKEN`, which
+  is exported *above* the interactive guard in `~/.bashrc`, so a login shell has
+  it. `mise` is activated *below* that guard, so a login shell does **not** have
+  it. Plain `bash -lc 'pnpm ...'` therefore fails with `pnpm: command not found`,
+  and plain `pnpm ...` from a script fails with `Not logged in`. You need both:
+  `bash -lc 'eval "$(~/.local/bin/mise activate bash)"; pnpm ...'`.
 
 ## Build tooling
 
@@ -72,11 +108,27 @@ lets the packages be built independently and in parallel.
 Three independent networks (no bridge). Provide credentials via a local `.env`
 (never commit; `.env` is gitignored, keep a `.env.example` with keys only):
 
-- Hedera testnet operator id + key (pay / bond / slash).
+- Hedera testnet operator id + key (pay / bond / slash). The portal issues
+  **ECDSA** accounts, so parse with `parseOperatorKey`, never
+  `PrivateKey.fromString`, which silently reads a bare hex key as ED25519 and
+  hands back a valid key that is not yours. You find out at the network, as
+  `INVALID_SIGNATURE`.
+- A **second** Hedera account as payee/bond/challenger, so transfers are real
+  rather than self-transfers. This matters twice over: nothing of value moves in a
+  self-transfer, and the mirror node reports one as only the fee movement, so the
+  amount check in `confirmPayment` can never pass on it. Create with
+  `packages/payments/scripts/create-account.ts`, which keeps the key; recycle its
+  balance with `sweep-payee.ts`, since everything otherwise flows one way and the
+  operator drains at roughly 90 HBAR per rehearsal cycle.
 - Sepolia wallet private key that owns the ENS parent name (manifest + reputation
   writes). The parent lives on **Sepolia** (mainnet `assay.eth` is taken by a third
-  party and is not needed for the build).
-- The Graph API key (Token API, mainnet, read-only).
+  party and is not needed for the build). Subnames resolve through a **wildcard
+  resolver**, so any label under the parent is writable with no on-chain creation
+  step. Do not trust the `.eth` BaseRegistrar here: it reports the name expired
+  while resolution works fine.
+- The Graph API key (Studio), used against `gateway.thegraph.com` for block-pinned
+  subgraph queries. Note the Token API is a different product on a different host
+  and wants a different credential: see `FEEDBACK.md`.
 
 ## The one hard rule: spike before you build
 
@@ -88,11 +140,20 @@ bounty) and disclose it honestly. Do not build the whole loop on an unproven rai
 
 ## Testing
 
-The **verifier is the crux**. Unit-test `cap-rugscore` with two token fixtures (one
-clean, one rug) plus a **lying-provider** fixture that tampers one claim; the
-verifier must catch it. That test is also the demo climax. Claims are
-**block-stamped**: the verifier must query the same block, or honest providers get
+The **verifier is the crux**. `cap-rugscore` is unit-tested with two token fixtures
+(one clean, one rug) plus the **lying-provider** harness that tampers one claim;
+the verifier catches it. That test is also the demo climax. Claims are
+**block-stamped**: the verifier queries the same block, or honest providers get
 slashed on data drift.
+
+`TESTING.md` is the full walkthrough, ordered so a failure tells you which of the
+three networks to blame.
+
+**The lesson this repo keeps re-learning: unit tests pass on things the chain does
+not do.** The payment gate, the event sink and the default provider list each shipped
+green and broke on first real contact, because the fakes model the configured happy
+path rather than the network's actual behaviour. Anything touching a live network
+needs a live run before you believe it.
 
 ## Commits
 

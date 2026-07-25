@@ -49,7 +49,10 @@ different token, or ask the agent why it decided something, and watch it answer.
 **Pacing control.** Claude Code decides its own path and may take longer or shorter than the
 115s a scripted run took. Do not promise a duration.
 
-**The offline fallback.** There is no rehearsal mode any more. The recorded clip (#31) is the
+**The offline fallback is thinner, not gone.** `pnpm --filter @assay/dashboard exec tsx
+src/index.ts slash` replays a captured real run with no network, so the climax is still
+showable if the wifi dies. What it cannot do is show the agent reasoning, since that half
+lived in the deleted runner. The recorded clip (#31) is the
 only thing that survives dead wifi, so record it after a rehearsal that went well.
 
 
@@ -132,7 +135,7 @@ survive a process restart" (SPEC.md §17's declared scope cut). `reset-demo-stat
 MCP server the agent actually drives is a *third*, separate process, whose own payments port
 never saw that `bondRef`. The old keypress runner never hit this because its `doChallenge`
 re-bonded the sacrificial provider inside the *same* process immediately before challenging —
-the scenic runner's live agent has no equivalent step, and adding one would mean spending a real
+a Claude Code session has no equivalent step, and adding one would mean spending a real
 bond on every server start regardless of whether the agent ever challenges, which is out of
 scope for #93/#94.
 

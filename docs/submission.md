@@ -94,17 +94,23 @@ transfer, "reputation" would just be a number nobody has to back up.
 - `packages/payments/README.md` has the full transcript of a live `postBond` + `slash`
   round trip against testnet, including the HashScan links for both transactions.
 
-**The honest limit, stated plainly because it changes what "paid" and "slashed" mean
-right now.** Only one funded testnet account exists so far, so every pay, bond and slash
-transaction executed to date, including in the recorded demo runs, has moved between the
-operator's own account and itself (`0.0.9695801 -> 0.0.9695801`). The transaction path is
-real: it is signed, submitted and finalized by the real Hedera SDK client, and the
-mirror node confirms it exactly the way a payment to an independent payee would be
-confirmed. But no HBAR has actually left the operator's control net of network fees,
-because there has been no independent payee, bond escrow or challenger account to send
-it to. `packages/payments/README.md` documents this in the same place it documents the
-timings, and I'd rather a judge read it there than discover it themselves and wonder why
-it wasn't said up front.
+**Value genuinely leaves the payer.** For most of the build only one funded testnet
+account existed, so every pay, bond and slash was a self-transfer: real signed
+transactions, but the amount netted to zero and nothing left the operator's control
+beyond fees. That was disclosed rather than hidden, and it turned out to matter for a
+second reason nobody predicted. When the payment gate started verifying the amount, the
+loop broke: **the mirror node reports a self-transfer as only the fee movement**, so the
+payment never appears in the transfer list and no amount check can pass on one. Every
+unit test passed; only the live run showed it.
+
+The fix was a second funded account, not a weaker check. A payment now reads:
+
+```
+0.0.9695801  -5.00143077 HBAR
+0.0.9743633  +5 HBAR
+```
+
+which is what makes verifying an amount meaningful in the first place.
 
 ### The Graph — Best AI Use Case
 
@@ -187,13 +193,43 @@ If you resolve the bare parent name (`assay.eth`) instead of the subname, expect
 `assay:rep` to come back unset: the parent is identity for the project, not a live
 provider, and the loop's discover/pay path never reads it.
 
-## 4. How to verify our claims
+## 4. Seeing it run
+
+Open Claude Code in the repo and run `/assay-demo`. `.mcp.json` registers the `assay`
+MCP server, so a real session drives the real loop: it chooses which providers to
+consult, which to pay, what to verify and whether to challenge. Nothing is pressed.
+
+We deliberately ship no custom demo application. Two were built and deleted, because a
+renderer we write is less credible than the tool the audience already uses: in Claude
+Code a judge sees the MCP server badge, the real tool names, the arguments and the raw
+JSON that came back, and none of it has to be taken on trust.
+
+The prompt (`.claude/commands/assay-demo.md`) sets a goal and a budget and never names
+the provider to distrust, the claim to check, or when to challenge.
+
+A full session is committed at
+`apps/mcp/agent/transcripts/2026-07-25-claude-code-session.md`. It is worth reading for
+one paragraph in particular, which we did not prompt and could not have written better:
+
+> the two providers' claims were four blocks apart, so a naive side-by-side comparison of
+> their outputs would have been unsound reasoning even though it happened to point at the
+> right answer. What actually convicted the second provider was re-deriving at its own
+> stamped block.
+
+Nobody told the agent that comparing two providers' outputs would be unsound, or that
+block-stamping is what makes a verdict safe. It worked that out, flagged it rather than
+burying it, and noted that the unsound route would have reached the right answer anyway.
+That is this project's central argument, arrived at independently by the thing it was
+built for. The reputation changes it reports were checked against the Sepolia resolver
+afterwards rather than taken from the transcript.
+
+## 5. How to verify our claims
 
 `TESTING.md`'s final section, "Verifying the claims without running anything," is built
 for exactly this: checking the project's claims against public data, without our `.env`
 or testnet credentials. Three checks that fit in under a minute each:
 
-1. **The test suite, offline.** `pnpm -r typecheck && pnpm -r test` runs 288 tests
+1. **The test suite, offline.** `pnpm -r typecheck && pnpm -r test` runs 394 tests
    across 9 packages with no network and no credentials. If this is not green, stop
    there; nothing else matters until it is.
 2. **A Hedera transaction, on HashScan.** Open any transaction id cited in this document
@@ -209,7 +245,7 @@ Note that `TESTING.md`'s own one-line ENS snippet assumes `SEPOLIA_RPC_URL` is a
 exported into your shell, not just sitting in a `.env` file (that particular script does
 not load one). Export it first, or use the self-contained version above.
 
-## 5. What is real and what is staged
+## 6. What is real and what is staged
 
 This follows the project's own design doc (SPEC.md §11, kept private, but this is a
 faithful account of it), plus the gaps I know about and have not closed.
@@ -248,7 +284,7 @@ run.
   reads it back and compares it. Binding that comparison in code, not just leaving it
   checkable by eye, is the next hardening step.
 
-## 6. Demo video script
+## 7. Demo video script
 
 Based on the measured numbers in `docs/demo-run-sheet.md`, not on the original 90-second
 plan in the design doc, which does not reliably fit. Full rehearsals of the live portion
