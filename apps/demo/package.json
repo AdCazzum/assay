@@ -1,0 +1,23 @@
+{
+  "name": "@assay/demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "description": "Drives the whole Assay demo from one keyboard, narrating the live loop on one screen",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@assay/cap-rugscore": "workspace:*",
+    "@assay/core": "workspace:*",
+    "@assay/dashboard": "workspace:*",
+    "@assay/graph": "workspace:*",
+    "@assay/payments": "workspace:*",
+    "@assay/registry": "workspace:*"
+  }
+}
