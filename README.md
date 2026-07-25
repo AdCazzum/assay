@@ -101,9 +101,19 @@ policy rather than being blocked by it.
 
 Stated plainly because a submission that hides this deserves to lose:
 
-**Real.** Every value transfer on Hedera (payment, bond, slash). Every ENS read and write.
-Every Graph query, against mainnet data. The verifier's logic. The MCP server and the
-Claude agent driving it.
+**Real.** Every value transfer on Hedera (payment, bond, slash) is a real, signed,
+submitted, mirror-node-confirmed transaction. Every ENS read and write. Every Graph
+query, against mainnet data. The verifier's logic. The MCP server and the Claude agent
+driving it.
+
+**But only one funded testnet account exists.** Every Hedera transfer run so far,
+including in the demo runs and transcripts referenced above, is a self-transfer
+(`0.0.9695801 -> 0.0.9695801`): the transaction path is real, but there is no second
+account to act as payee, bond escrow, or challenger, so the bond/slash amount nets to
+zero and no HBAR actually leaves the operator's control net of fees. See
+`packages/payments/README.md` for the mirror-node evidence and the env vars
+(`SPIKE_PAY_TO_ACCOUNT_ID` / `SPIKE_BOND_ACCOUNT_ID` / `SPIKE_CHALLENGER_ACCOUNT_ID`) that
+would exercise a real second party once one is funded.
 
 **Staged, and disclosed on screen when it runs.** The "lying provider" is
 `createLyingRugScoreProvider`, a deliberately tampered test harness that runs the real
