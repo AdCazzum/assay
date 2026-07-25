@@ -1,5 +1,11 @@
-import type { Job } from '@assay/core';
-import type { AssayNodePort, DiscoverResult } from './node-port.js';
+import type { Job, Manifest } from '@assay/core';
+import type {
+  AssayNodePort,
+  DiscoverResult,
+  ProviderListItem,
+  RegisterProviderResult,
+  VerifyClaimResult,
+} from './node-port.js';
 
 /**
  * Thrown by `NotWiredAssayNode`. Named and worded so it reads honestly to
@@ -46,5 +52,29 @@ export class NotWiredAssayNode implements AssayNodePort {
 
   async rate(_jobId: string, _satisfied: boolean, _comment?: string): Promise<Job> {
     throw new NodeNotWiredError('rate');
+  }
+
+  async verifyClaim(_jobId: string, _claimKey: string): Promise<VerifyClaimResult> {
+    throw new NodeNotWiredError('verify_claim');
+  }
+
+  async registerProvider(
+    _label: string,
+    _manifest: Omit<Manifest, 'bondRef'>,
+    _bondHbar: number,
+  ): Promise<RegisterProviderResult> {
+    throw new NodeNotWiredError('register_provider');
+  }
+
+  async listProviders(): Promise<ProviderListItem[]> {
+    throw new NodeNotWiredError('list_providers');
+  }
+
+  async getJob(_jobId: string): Promise<Job> {
+    throw new NodeNotWiredError('get_job');
+  }
+
+  async listJobs(): Promise<Job[]> {
+    throw new NodeNotWiredError('list_jobs');
   }
 }

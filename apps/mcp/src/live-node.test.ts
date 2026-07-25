@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { createCapabilityRegistry, createJobStore, PayDeclinedError, ReputationUpdateFailedError } from '@assay/core';
+import {
+  createCapabilityRegistry,
+  createJobStore,
+  PayDeclinedError,
+  ReputationUpdateFailedError,
+  type LoopEvent,
+} from '@assay/core';
 import type { Capability, Manifest, ProviderRecord } from '@assay/core';
-import { createLiveAssayNode, RateNotApplicableError } from './live-node.js';
+import {
+  createLiveAssayNode,
+  InvalidProviderLabelError,
+  MissingEnsParentNameError,
+  RateNotApplicableError,
+} from './live-node.js';
 import {
   FailingUpdateReputationRegistryPort,
   FakeGraphPort,
@@ -45,6 +56,9 @@ function buildLiveNode(opts?: {
   paymentsOpts?: FakePaymentsPortOptions;
   verify?: EchoVerify;
   challengerAccountId?: string;
+  ensParentName?: string;
+  candidateProviderNames?: string[];
+  onLoopEvent?: (event: LoopEvent) => void | Promise<void>;
 }) {
   const registry = new FakeRegistryPort().seed(PROVIDER_NAME, {
     manifest,
@@ -63,6 +77,9 @@ function buildLiveNode(opts?: {
     capabilities,
     jobs,
     challengerAccountId: opts?.challengerAccountId ?? CHALLENGER_ACCOUNT_ID,
+    ensParentName: opts?.ensParentName,
+    candidateProviderNames: opts?.candidateProviderNames,
+    onLoopEvent: opts?.onLoopEvent,
   });
   return { node, registry, payments, graph, jobs };
 }
@@ -80,6 +97,17 @@ describe('createLiveAssayNode', () => {
       expect(assessment.providerName).toBe(PROVIDER_NAME);
       expect(assessment.unproven).toBe(false);
       expect(assessment.signals.length).toBeGreaterThan(0);
+    });
+
+    it('routes through AssayNode.discover, so a discover LoopEvent is actually emitted (issue #84 fix: this used to call registry.resolveProvider directly, bypassing the node and emitting nothing)', async () => {
+      const events: LoopEvent[] = [];
+      const { node } = buildLiveNode({ onLoopEvent: (event) => void events.push(event) });
+
+      await node.discover(PROVIDER_NAME);
+
+      const discoverEvents = events.filter((event) => event.step === 'discover');
+      expect(discoverEvents).toHaveLength(1);
+      expect(discoverEvents[0]).toMatchObject({ outcome: 'ok', name: PROVIDER_NAME });
     });
   });
 
@@ -109,6 +137,23 @@ describe('createLiveAssayNode', () => {
 
       expect(job.status).toBe('served');
       expect(payments.payCalls).toHaveLength(1);
+    });
+
+    it('force: true still emits a "paid" LoopEvent for the real HBAR that left the account (issue #84 fix: this path calls payments.pay() directly and used to emit nothing)', async () => {
+      const events: LoopEvent[] = [];
+      const { node } = buildLiveNode({
+        reputation: { jobs: 4, slashes: 2 },
+        onLoopEvent: (event) => void events.push(event),
+      });
+
+      await node.payAndCall(PROVIDER_NAME, 'hello', true);
+
+      const payEvents = events.filter((event) => event.step === 'pay');
+      // no 'assessed' phase: the policy is deliberately skipped on force: true
+      expect(payEvents.map((e) => (e as { phase: string }).phase)).not.toContain('assessed');
+      expect(payEvents.map((e) => (e as { phase: string }).phase)).toContain('paid');
+      const serveEvents = events.filter((event) => event.step === 'serve');
+      expect(serveEvents).toHaveLength(1);
     });
 
     it('resolves the capability registry id off the manifest rather than assuming it equals the ENS name', async () => {
@@ -242,6 +287,144 @@ describe('createLiveAssayNode', () => {
       const job = await node.payAndCall(PROVIDER_NAME, 'hello');
 
       await expect(node.rate(job.jobId, true)).rejects.toThrow(/simulated ENS updateReputation write failure/);
+    });
+
+    it('emits reputation LoopEvents sharing one strictly increasing seq with the node\'s own events (issue #84 fix: rate() lived outside AssayNode and emitted nothing at all)', async () => {
+      const events: LoopEvent[] = [];
+      const { node } = buildLiveNode({ onLoopEvent: (event) => void events.push(event) });
+      const job = await node.payAndCall(PROVIDER_NAME, 'hello');
+      events.length = 0; // only care about rate()'s own events from here
+
+      await node.rate(job.jobId, true);
+
+      const reputationPhases = events
+        .filter((event) => event.step === 'reputation')
+        .map((event) => (event as unknown as { progress: { phase: string } }).progress.phase);
+      expect(reputationPhases).toEqual(['writing-reputation', 'reputation-confirmed', 'done']);
+      // strictly increasing seq across every emitted event, not just within rate()'s own
+      const seqs = events.map((event) => event.seq);
+      expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+      expect(new Set(seqs).size).toBe(seqs.length);
+    });
+  });
+
+  describe('verifyClaim', () => {
+    it('re-derives a claim through the real capability verify() and reports a true verdict, without moving the job', async () => {
+      const { node } = buildLiveNode();
+      const job = await node.payAndCall(PROVIDER_NAME, 'hello');
+
+      const result = await node.verifyClaim(job.jobId, 'echoedLength');
+
+      expect(result.verdict).toEqual({ valid: true });
+      expect(result.claims).toEqual(job.claims);
+      expect(result.jobId).toBe(job.jobId);
+      expect(result.claimKey).toBe('echoedLength');
+      // read-only: the job is still "served", verifyClaim never transitions it
+      expect((await node.getJob(job.jobId)).status).toBe('served');
+    });
+
+    it('reports a false verdict for a tampered claim, still without moving the job (challenge is the committing action, not this)', async () => {
+      const { node } = buildLiveNode({
+        verify: async () => ({ valid: false, badClaim: 'echoedLength', reason: 'the length was fabricated' }),
+      });
+      const job = await node.payAndCall(PROVIDER_NAME, 'hello');
+
+      const result = await node.verifyClaim(job.jobId, 'echoedLength');
+
+      expect(result.verdict).toEqual({
+        valid: false,
+        badClaim: 'echoedLength',
+        reason: 'the length was fabricated',
+      });
+      expect((await node.getJob(job.jobId)).status).toBe('served');
+    });
+
+    it('rejects an unknown claim key', async () => {
+      const { node } = buildLiveNode();
+      const job = await node.payAndCall(PROVIDER_NAME, 'hello');
+
+      await expect(node.verifyClaim(job.jobId, 'noSuchClaim')).rejects.toThrow(/no claim/);
+    });
+  });
+
+  describe('registerProvider', () => {
+    const newManifest: Omit<Manifest, 'bondRef'> = {
+      capabilityId: 'echo',
+      description: 'a brand-new agent-registered echo provider',
+      priceHbar: 3,
+      endpoint: 'https://example.invalid/new-echo',
+      verifierHash: '0xnew',
+    };
+
+    it('throws MissingEnsParentNameError when the node was not configured with one', async () => {
+      const { node } = buildLiveNode();
+      await expect(node.registerProvider('newagent', newManifest, 10)).rejects.toThrow(MissingEnsParentNameError);
+    });
+
+    it('throws InvalidProviderLabelError for a label containing a dot', async () => {
+      const { node } = buildLiveNode({ ensParentName: 'assay.eth' });
+      await expect(node.registerProvider('newagent.assay.eth', newManifest, 10)).rejects.toThrow(
+        InvalidProviderLabelError,
+      );
+    });
+
+    it('builds the full ENS name from the label and calls AssayNode.register() for real, reporting progress', async () => {
+      const { node, registry, payments } = buildLiveNode({ ensParentName: 'assay.eth' });
+      const progress: string[] = [];
+
+      const result = await node.registerProvider('newagent', newManifest, 10, (p) => progress.push(p.phase));
+
+      expect(result.name).toBe('newagent.assay.eth');
+      expect(payments.postBondCalls).toEqual([10]);
+      expect(progress).toEqual(['posting-bond', 'publishing-manifest', 'initializing-reputation', 'done']);
+      const registered = await registry.resolveProvider('newagent.assay.eth');
+      expect(registered.manifest).toEqual({ ...newManifest, bondRef: result.bondRef });
+      expect(registered.reputation.bondHbar).toBe(10);
+    });
+  });
+
+  describe('listProviders', () => {
+    it('resolves every configured candidate, turning a resolve failure into a labelled miss rather than an error', async () => {
+      const { node } = buildLiveNode({ candidateProviderNames: [PROVIDER_NAME, 'missing.assay.eth'] });
+
+      const items = await node.listProviders();
+
+      expect(items).toHaveLength(2);
+      const hit = items.find((item) => item.name === PROVIDER_NAME)!;
+      expect(hit.outcome).toBe('ok');
+      expect(hit.outcome === 'ok' && hit.provider.manifest).toEqual(manifest);
+      const miss = items.find((item) => item.name === 'missing.assay.eth')!;
+      expect(miss.outcome).toBe('miss');
+      expect(miss.outcome === 'miss' && miss.reason).toMatch(/missing.assay.eth/);
+    });
+
+    it('returns an empty list when no candidates are configured', async () => {
+      const { node } = buildLiveNode();
+      expect(await node.listProviders()).toEqual([]);
+    });
+  });
+
+  describe('getJob / listJobs', () => {
+    it('reads back a served job by id with no network call', async () => {
+      const { node } = buildLiveNode();
+      const job = await node.payAndCall(PROVIDER_NAME, 'hello');
+
+      expect(await node.getJob(job.jobId)).toEqual(job);
+    });
+
+    it('throws for an unknown job id', async () => {
+      const { node } = buildLiveNode();
+      await expect(node.getJob('no-such-job')).rejects.toThrow(/Unknown job/);
+    });
+
+    it('lists every job created so far, in creation order', async () => {
+      const { node } = buildLiveNode();
+      expect(await node.listJobs()).toEqual([]);
+
+      const first = await node.payAndCall(PROVIDER_NAME, 'hello');
+      const second = await node.payAndCall(PROVIDER_NAME, 'hi');
+
+      expect(await node.listJobs()).toEqual([first, second]);
     });
   });
 });

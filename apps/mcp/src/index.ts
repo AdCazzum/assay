@@ -142,7 +142,25 @@ export function buildLiveNodeFromEnv(): AssayNodePort {
   const capabilities = createCapabilityRegistry();
   capabilities.register(createRugScoreCapability({ graph }));
 
-  return createLiveAssayNode({ registry, payments, graph, capabilities, challengerAccountId });
+  // The two names already live on Sepolia as of this writing (SPEC.md §7,
+  // docs/demo-run-sheet.md): the good provider and the sacrificial "liar"
+  // one the watchdog targets. Overridable via `ASSAY_CANDIDATE_PROVIDER_NAMES`
+  // (comma-separated) so a demo variant, or a freshly `register_provider`-ed
+  // name, can be added to what `list_providers` resolves without a code
+  // change.
+  const candidateProviderNames = process.env.ASSAY_CANDIDATE_PROVIDER_NAMES
+    ? process.env.ASSAY_CANDIDATE_PROVIDER_NAMES.split(',').map((name) => name.trim()).filter(Boolean)
+    : [`rugscore.${env.ENS_PARENT_NAME}`, `liar.${env.ENS_PARENT_NAME}`];
+
+  return createLiveAssayNode({
+    registry,
+    payments,
+    graph,
+    capabilities,
+    challengerAccountId,
+    ensParentName: env.ENS_PARENT_NAME,
+    candidateProviderNames,
+  });
 }
 
 async function main(): Promise<void> {
