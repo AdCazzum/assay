@@ -52,6 +52,44 @@ export function computeDemoBondHbar(priceHbar: number, multiple: number = DEFAUL
 }
 
 /**
+ * The sacrificial provider (`liar.<parent>`, the one `apps/watchdog` slashes)
+ * needs resetting too, and for a different reason than the good one.
+ *
+ * Found during the first full rehearsal: the watchdog had driven it to
+ * `score: 0`, and a score already at the floor cannot visibly drop. The next
+ * run would have narrated "score 0 -> 0" at the exact moment the demo is
+ * supposed to show reputation collapsing, which is the climax. The reputation
+ * write would still have been real, so nothing would have looked broken, and
+ * the most important beat in the demo would simply have been invisible.
+ *
+ * `SETTLEMENT_SCORE_PENALTY` in `@assay/core`'s `settlement-policy.ts` is -30,
+ * so this starts high enough that a slash produces a large, legible fall and
+ * clamping at 0 never comes into it. Slashes start at 1 rather than 0: this
+ * provider is meant to read as one with a history, which is also why the
+ * watchdog challenging it is plausible rather than arbitrary.
+ */
+export const SACRIFICIAL_SCORE = 88;
+export const SACRIFICIAL_JOBS = 9;
+export const SACRIFICIAL_SLASHES = 1;
+
+/**
+ * Opening state for the provider that gets slashed during rehearsals. Bond is
+ * a multiple of price for the same reason as the good provider: a bond smaller
+ * than the fee is no deterrent, and there is nothing meaningful to slash.
+ */
+export function buildSacrificialReputation(
+  priceHbar: number,
+  multiple: number = DEFAULT_DEMO_BOND_MULTIPLE,
+): Reputation {
+  return {
+    score: SACRIFICIAL_SCORE,
+    jobs: SACRIFICIAL_JOBS,
+    slashes: SACRIFICIAL_SLASHES,
+    bondHbar: computeDemoBondHbar(priceHbar, multiple),
+  };
+}
+
+/**
  * The full, absolute reputation state `reset-demo-state.ts` writes -- not a
  * delta layered on top of whatever is live. `updateReputation`'s
  * read-modify-write (`@assay/registry`'s `ens-registry.ts`) merges its

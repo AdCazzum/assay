@@ -12,6 +12,7 @@ import {
   DEMO_SCORE,
   DEMO_SLASHES,
   buildDemoReputation,
+  buildSacrificialReputation,
   computeDemoBondHbar,
 } from './demo-state.js';
 
@@ -83,5 +84,32 @@ describe('buildDemoReputation', () => {
     const damaged = providerRecordWith({ score: 31, jobs: 5, slashes: 2, bondHbar: 0.02 });
     const decision = evaluatePayDecision(assessProvider(damaged), DEFAULT_PAY_DECISION_POLICY);
     expect(decision.pay).toBe(false);
+  });
+});
+
+describe('buildSacrificialReputation', () => {
+  it('starts high enough that a slash produces a visible fall', () => {
+    // Found in the first full rehearsal: the watchdog had driven the
+    // sacrificial provider to score 0, and a score at the floor cannot drop.
+    // The next run would have narrated "0 -> 0" at the demo's climax.
+    const SETTLEMENT_SCORE_PENALTY = 30; // @assay/core settlement-policy.ts
+    const rep = buildSacrificialReputation(5);
+    expect(rep.score - SETTLEMENT_SCORE_PENALTY).toBeGreaterThan(0);
+  });
+
+  it('reads as a provider with a history, so challenging it is plausible', () => {
+    const rep = buildSacrificialReputation(5);
+    expect(rep.jobs).toBeGreaterThan(0);
+    expect(rep.slashes).toBeGreaterThan(0);
+  });
+
+  it('bonds a real multiple of the price, so there is something to slash', () => {
+    expect(buildSacrificialReputation(5).bondHbar).toBe(30);
+  });
+
+  it('differs from the good provider, which is the whole point of the split', () => {
+    const good = buildDemoReputation(5);
+    const liar = buildSacrificialReputation(5);
+    expect(liar.slashes).not.toBe(good.slashes);
   });
 });

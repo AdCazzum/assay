@@ -83,7 +83,8 @@ import { createHederaPaymentsPort, createHederaSdkTransferClient, type HederaKey
 import { computeVerifierHash } from '@assay/cap-rugscore';
 import { createEnsRegistry, type ReputationWriteProgress } from '../src/ens-registry.js';
 import { EnsRegistryError } from '../src/errors.js';
-import { buildDemoReputation, computeDemoBondHbar, DEFAULT_DEMO_BOND_MULTIPLE } from './demo-state.js';
+import { buildDemoReputation, buildSacrificialReputation, computeDemoBondHbar, DEFAULT_DEMO_BOND_MULTIPLE } from './demo-state.js';
+import type { PaymentsPort, RegistryPort, Reputation } from '@assay/core';
 
 const repoRoot = path.resolve(fileURLToPath(import.meta.url), '../../../..');
 loadEnv({ path: path.join(repoRoot, '.env') });
@@ -139,25 +140,102 @@ function logReputationProgress(info: ReputationWriteProgress): void {
   }
 }
 
+/**
+ * Resets one provider: real bond, then manifest, then the absolute reputation
+ * target, then an independent read-back.
+ *
+ * Factored out because there are two providers to reset and they need
+ * different opening states for different reasons. The good one has to look
+ * worth paying; the sacrificial one has to have room to fall.
+ */
+async function resetProvider(opts: {
+  name: string;
+  role: string;
+  buildReputation: (priceHbar: number, multiple: number) => Reputation;
+  registry: RegistryPort;
+  payments: PaymentsPort;
+  bondMultiple: number;
+  network: HederaNetwork;
+  endpoint: string;
+}): Promise<boolean> {
+  const { name, role, buildReputation, registry, payments, bondMultiple, network, endpoint } = opts;
+  const tag = `[reset-demo:${role}]`;
+
+  console.log('');
+  console.log(`${tag} --- ${name} ---`);
+
+  // 1. Resolve the current record for its live priceHbar. Also fails fast,
+  // with a clear message, if the name has no manifest published yet (run
+  // packages/registry/scripts/smoke.ts with SMOKE_LABEL first).
+  const before = await registry.resolveProvider(name);
+  console.log(`${tag} price: ${before.manifest.priceHbar} HBAR`);
+  console.log(`${tag} reputation before: ${JSON.stringify(before.reputation)}`);
+
+  const bondHbar = computeDemoBondHbar(before.manifest.priceHbar, bondMultiple);
+
+  // 2. A real Hedera bond, confirmed via mirror node, behind the number this
+  // script is about to publish. Not a claimed figure.
+  console.log(`${tag} posting real bond: ${bondHbar} HBAR (${bondMultiple}x price)...`);
+  const { bondRef, txId: bondTxId } = await payments.postBond(bondHbar);
+  if (!(await payments.confirm(bondTxId))) {
+    throw new Error(
+      `bond tx ${bondTxId} did not confirm via mirror node; refusing to publish a reputation record backed by an unconfirmed bond.`,
+    );
+  }
+  console.log(`${tag} bond tx: ${HASHSCAN_BASE_URL[network]}/transaction/${bondTxId}`);
+
+  // 3. Republish the manifest: bondRef points at the bond just posted, and
+  // endpoint/verifierHash/description carry real values rather than the
+  // placeholders they used to (#67).
+  const verifierHash = computeVerifierHash();
+  const { txHash: manifestTxHash } = await registry.publishManifest(name, {
+    ...before.manifest,
+    description: DEMO_DESCRIPTION,
+    bondRef,
+    endpoint,
+    verifierHash,
+  });
+  console.log(`${tag} manifest tx: https://sepolia.etherscan.io/tx/${manifestTxHash}`);
+
+  // 4. The full absolute reputation target, so the reset actually resets
+  // whatever rehearsals left behind.
+  const target = buildReputation(before.manifest.priceHbar, bondMultiple);
+  const { txHash: reputationTxHash } = await registry.updateReputation(name, target);
+  console.log(`${tag} reputation tx: https://sepolia.etherscan.io/tx/${reputationTxHash}`);
+
+  // 5. Read it back independently, so the line below is proof rather than an
+  // echo of what was sent.
+  const after = await registry.resolveProvider(name);
+  const matches =
+    after.reputation.score === target.score &&
+    after.reputation.jobs === target.jobs &&
+    after.reputation.slashes === target.slashes &&
+    after.reputation.bondHbar === target.bondHbar;
+  console.log(`${tag} reputation after:  ${JSON.stringify(after.reputation)}`);
+  console.log(`${tag} read-back matches target: ${matches ? 'OK' : 'MISMATCH'}`);
+  return matches;
+}
+
 async function main(): Promise<void> {
   // --- Sepolia / ENS config ---
   const rpcUrl = requireEnv('SEPOLIA_RPC_URL');
   const sepoliaPrivateKey = requireEnv('SEPOLIA_PRIVATE_KEY');
   const parentName = requireEnv('ENS_PARENT_NAME');
   const label = process.env.DEMO_PROVIDER_LABEL ?? 'rugscore';
-  const name = `${label}.${parentName}`;
+  const sacrificialLabel = process.env.WATCHDOG_PROVIDER_LABEL ?? 'liar';
   const bondMultiple = Number(process.env.DEMO_BOND_MULTIPLE ?? String(DEFAULT_DEMO_BOND_MULTIPLE));
 
-  // --- Hedera config (real bond) ---
+  // --- Hedera config (real bonds) ---
   const operatorId = requireEnv('HEDERA_OPERATOR_ID');
   const operatorKey = requireEnv('HEDERA_OPERATOR_KEY');
   const network = (process.env.HEDERA_NETWORK ?? 'testnet') as HederaNetwork;
   const keyType = process.env.HEDERA_KEY_TYPE as HederaKeyType | undefined;
   const bondAccountId = process.env.HEDERA_BOND_ACCOUNT_ID || operatorId;
+  const endpoint = process.env.DEMO_PROVIDER_ENDPOINT ?? DEFAULT_PROVIDER_ENDPOINT;
 
-  console.log(`[reset-demo] target name: ${name}`);
-  console.log(`[reset-demo] rpc: ${rpcUrl}`);
   console.log(`[reset-demo] hedera network: ${network}`);
+  console.log(`[reset-demo] endpoint:       ${endpoint}`);
+  console.log(`[reset-demo] verifierHash:   ${computeVerifierHash()}`);
 
   const registry = createEnsRegistry({
     rpcUrl,
@@ -166,19 +244,6 @@ async function main(): Promise<void> {
     onReputationWriteAttempt: logReputationProgress,
   });
 
-  // 1. Resolve the current record for its live priceHbar. This also fails
-  // fast, with a clear message, if the name has no manifest published yet
-  // (run packages/registry/scripts/smoke.ts first).
-  console.log('[reset-demo] resolving current record for priceHbar...');
-  const before = await registry.resolveProvider(name);
-  console.log(`[reset-demo] current manifest priceHbar: ${before.manifest.priceHbar} HBAR`);
-  console.log('[reset-demo] current reputation (before reset):', JSON.stringify(before.reputation, null, 2));
-
-  const bondHbar = computeDemoBondHbar(before.manifest.priceHbar, bondMultiple);
-
-  // 2. Post a real Hedera bond for that amount, confirmed via mirror node --
-  // a real tx behind the number this script is about to write, not just a
-  // claimed figure.
   const transferClient = createHederaSdkTransferClient({ operatorId, operatorKey, network, keyType });
   try {
     const payments = createHederaPaymentsPort({
@@ -187,66 +252,35 @@ async function main(): Promise<void> {
       bondAccountId,
       mirrorNodeBaseUrl: process.env.HEDERA_MIRROR_NODE_URL || MIRROR_NODE_BASE_URL[network],
       fetchImpl: fetch,
-      onConfirmAttempt: (info) => console.log(`[reset-demo] bond confirm: poll #${info.attempt} at ${info.elapsedMs}ms: ${info.state}`),
     });
 
-    console.log(`[reset-demo] posting real bond: ${bondHbar} HBAR (${bondMultiple}x the ${before.manifest.priceHbar} HBAR price), ${operatorId} -> ${bondAccountId}...`);
-    const bondStart = Date.now();
-    const { bondRef, txId: bondTxId } = await payments.postBond(bondHbar);
-    const bondConfirmed = await payments.confirm(bondTxId);
-    const bondElapsedMs = Date.now() - bondStart;
-    console.log(`[reset-demo] bond ${bondConfirmed ? 'confirmed' : 'NOT CONFIRMED'} in ${bondElapsedMs}ms`);
-    console.log(`[reset-demo] bond tx: ${HASHSCAN_BASE_URL[network]}/transaction/${bondTxId}`);
-    if (!bondConfirmed) {
-      throw new Error(`bond tx ${bondTxId} did not confirm via mirror node; refusing to write a reputation record backed by an unconfirmed bond.`);
+    const shared = { registry, payments, bondMultiple, network, endpoint };
+
+    // The provider the demo opens on: has to read as worth paying.
+    const goodOk = await resetProvider({
+      name: `${label}.${parentName}`,
+      role: 'good',
+      buildReputation: buildDemoReputation,
+      ...shared,
+    });
+
+    // The provider the watchdog slashes: has to have room to fall. Skipped
+    // with SKIP_SACRIFICIAL_RESET=1 if a run sheet only needs the opening.
+    let sacrificialOk = true;
+    if (process.env.SKIP_SACRIFICIAL_RESET === '1') {
+      console.log('\n[reset-demo:liar] skipped (SKIP_SACRIFICIAL_RESET=1)');
+    } else {
+      sacrificialOk = await resetProvider({
+        name: `${sacrificialLabel}.${parentName}`,
+        role: 'liar',
+        buildReputation: buildSacrificialReputation,
+        ...shared,
+      });
     }
 
-    // 3. Republish the manifest: point bondRef at the bond just posted, and
-    // replace the two fields that were carrying placeholders (#67). The
-    // manifest is a public on-chain record judges read directly, so
-    // `provider.example` and a verifierHash that hashes nothing are not
-    // cosmetic problems.
-    const endpoint = process.env.DEMO_PROVIDER_ENDPOINT ?? DEFAULT_PROVIDER_ENDPOINT;
-    const verifierHash = computeVerifierHash();
-    console.log(`[reset-demo] endpoint:     ${endpoint}`);
-    console.log(`[reset-demo] verifierHash: ${verifierHash} (sha256 over ${'rugscore.ts + tolerances.ts'})`);
-    console.log('[reset-demo] publishing manifest (bondRef, endpoint, verifierHash)...');
-    const manifestStart = Date.now();
-    const { txHash: manifestTxHash } = await registry.publishManifest(name, {
-      ...before.manifest,
-      description: DEMO_DESCRIPTION,
-      bondRef,
-      endpoint,
-      verifierHash,
-    });
-    console.log(`[reset-demo] manifest write confirmed in ${Date.now() - manifestStart}ms (tx ${manifestTxHash})`);
-
-    // 4. Write the full absolute reputation target (real ENS write).
-    const target = buildDemoReputation(before.manifest.priceHbar, bondMultiple);
-    console.log('[reset-demo] writing target reputation:', JSON.stringify(target, null, 2));
-    const { txHash: reputationTxHash } = await registry.updateReputation(name, target);
-
-    // 5. Read the result back independently -- a fresh resolveProvider call,
-    // not the write calls' own return values -- so the summary below is
-    // proof of what is actually on-chain, not just an echo of what was sent.
-    const after = await registry.resolveProvider(name);
-
     console.log('');
-    console.log('[reset-demo] --- summary ---');
-    console.log(`[reset-demo] name: ${name}`);
-    console.log(`[reset-demo] bond tx:       ${bondTxId} (${HASHSCAN_BASE_URL[network]}/transaction/${bondTxId})`);
-    console.log(`[reset-demo] manifest tx:   ${manifestTxHash} (https://sepolia.etherscan.io/tx/${manifestTxHash})`);
-    console.log(`[reset-demo] reputation tx: ${reputationTxHash} (https://sepolia.etherscan.io/tx/${reputationTxHash})`);
-    console.log('[reset-demo] on-chain record, read back off the resolver:');
-    console.log(JSON.stringify({ manifest: after.manifest, reputation: after.reputation }, null, 2));
-
-    const matches =
-      after.reputation.score === target.score &&
-      after.reputation.jobs === target.jobs &&
-      after.reputation.slashes === target.slashes &&
-      after.reputation.bondHbar === target.bondHbar;
-    console.log(`[reset-demo] read-back matches target: ${matches ? 'OK' : 'MISMATCH'}`);
-    if (!matches) {
+    console.log(`[reset-demo] read-back matches target: ${goodOk && sacrificialOk ? 'OK' : 'MISMATCH'}`);
+    if (!(goodOk && sacrificialOk)) {
       process.exitCode = 1;
     }
   } finally {
