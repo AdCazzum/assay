@@ -51,12 +51,13 @@ function hashRequest(capabilityId: string, request: unknown): string {
  *   scope for this app.
  * - `payAndCall()` applies `DEFAULT_PAY_DECISION_POLICY` (`pay-policy.ts`)
  *   before paying. That policy is meant to protect a real requester, but it
- *   also means: after this very app slashes `providerName` a few times in a
- *   row (there is exactly one pre-created ENS subname available to demo
- *   against, `packages/registry/scripts/smoke.ts`), its live slash ratio can
- *   legitimately trip `maxSlashRatio` and block a later demo run against the
- *   same name. That is the policy working as intended, not a bug — but it
- *   would make this app unable to demo itself twice. This function pays and
+ *   also means: after this app slashes `providerName` a few times in a row
+ *   (expected -- it targets a sacrificial subname exactly so rehearsals land
+ *   here, see `live-node.ts`'s `LiveWatchdogNode.providerName` doc comment),
+ *   its live slash ratio can legitimately trip `maxSlashRatio` and block a
+ *   later demo run against that same name. That is the policy working as
+ *   intended, not a bug — but it would make this app unable to demo itself
+ *   twice. This function pays and
  *   serves directly, the same deliberate bypass `apps/mcp/src/live-node.ts`'s
  *   `force: true` path takes and for the same reason. The one gate that is
  *   never bypassed either way is `serve()`'s own `payments.confirm(txId)`
