@@ -23,15 +23,28 @@
  * started verifying amounts. Every unit test passed, because the fakes model a
  * transfer that does not net out. Only the real mirror node shows it.
  *
- * The account id goes in `.env` as `HEDERA_PAY_TO_ACCOUNT_ID`,
- * `HEDERA_BOND_ACCOUNT_ID` and `HEDERA_CHALLENGER_ACCOUNT_ID`. This script does
- * not print the new account's private key, and nothing in this repo needs it:
- * the account only ever receives.
+ * ## Keep the key
+ *
+ * An earlier version of this script discarded the new account's private key, on
+ * the reasoning that an account which only ever receives has no need for one.
+ * That is true in isolation and wrong in context: every payment, bond and slash
+ * moves HBAR one way, so the payee accumulates a balance and the operator
+ * drains at roughly 90 HBAR per rehearsal cycle. Without the key that balance
+ * is unrecoverable, and ~856 HBAR duly stranded before anyone noticed.
+ *
+ * So the key is written to `.env` alongside the id, and `sweep-payee.ts` uses it
+ * to send the balance back. It is written to the file rather than printed, so it
+ * does not end up in a terminal scrollback or a transcript.
+ *
+ * Writes `HEDERA_PAY_TO_ACCOUNT_ID`, `HEDERA_BOND_ACCOUNT_ID`,
+ * `HEDERA_CHALLENGER_ACCOUNT_ID` and `HEDERA_PAY_TO_ACCOUNT_KEY`. Pass
+ * `--print-env` to print the lines instead of writing them.
  */
 
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { config as loadEnv } from 'dotenv';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { AccountCreateTransaction, AccountId, Client, Hbar, PrivateKey } from '@hashgraph/sdk';
 import { parseOperatorKey, type HederaKeyType } from '../src/operator-key.js';
 
@@ -57,19 +70,44 @@ async function main(): Promise<void> {
   const client = Client.forTestnet().setOperator(operatorId, operatorKey);
   try {
     console.log(`[create-account] funding a new account with ${initialHbar} HBAR from ${operatorId.toString()}...`);
+    const key = PrivateKey.generateECDSA();
     const response = await new AccountCreateTransaction()
-      .setKeyWithoutAlias(PrivateKey.generateECDSA().publicKey)
+      .setKeyWithoutAlias(key.publicKey)
       .setInitialBalance(new Hbar(initialHbar))
       .execute(client);
     const receipt = await response.getReceipt(client);
+    const id = receipt.accountId?.toString();
+    if (!id) {
+      throw new Error('account creation returned no account id');
+    }
 
-    console.log(`[create-account] created ${receipt.accountId?.toString()}`);
+    console.log(`[create-account] created ${id}`);
     console.log(`[create-account] tx: https://hashscan.io/testnet/transaction/${response.transactionId.toString()}`);
-    console.log('');
-    console.log('Add to .env:');
-    console.log(`  HEDERA_PAY_TO_ACCOUNT_ID=${receipt.accountId?.toString()}`);
-    console.log(`  HEDERA_BOND_ACCOUNT_ID=${receipt.accountId?.toString()}`);
-    console.log(`  HEDERA_CHALLENGER_ACCOUNT_ID=${receipt.accountId?.toString()}`);
+
+    const assignments: Array<[string, string]> = [
+      ['HEDERA_PAY_TO_ACCOUNT_ID', id],
+      ['HEDERA_BOND_ACCOUNT_ID', id],
+      ['HEDERA_CHALLENGER_ACCOUNT_ID', id],
+      ['HEDERA_PAY_TO_ACCOUNT_KEY', key.toStringRaw()],
+    ];
+
+    if (process.argv.includes('--print-env')) {
+      // Explicitly asked for, so the key goes to stdout. Mind the scrollback.
+      console.log('');
+      for (const [k, v] of assignments) console.log(`${k}=${v}`);
+      return;
+    }
+
+    const envPath = path.join(repoRoot, '.env');
+    let env = readFileSync(envPath, 'utf8');
+    for (const [k, v] of assignments) {
+      env = new RegExp(`^${k}=.*$`, 'm').test(env)
+        ? env.replace(new RegExp(`^${k}=.*$`, 'm'), `${k}=${v}`)
+        : `${env.replace(/\n*$/, '')}\n${k}=${v}\n`;
+    }
+    writeFileSync(envPath, env);
+    console.log(`[create-account] wrote id and key to ${envPath} (key not printed)`);
+    console.log('[create-account] sweep its balance back with scripts/sweep-payee.ts');
   } finally {
     client.close();
   }
