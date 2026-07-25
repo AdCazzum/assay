@@ -13,3 +13,4 @@ export * from './assessment.js';
 export * from './pay-policy.js';
 export * from './settlement-policy.js';
 export * from './node.js';
+export * from './events.js';

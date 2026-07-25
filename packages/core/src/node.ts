@@ -14,6 +14,7 @@
 
 import { createHash } from 'node:crypto';
 import { assessProvider, type ProviderAssessment } from './assessment.js';
+import { createEventStamper, type LoopEvent, type LoopEventVariant } from './events.js';
 import { createJobStore, type JobStore } from './job-store.js';
 import type { GraphPort, PaymentsPort, RegistryPort } from './ports.js';
 import {
@@ -342,6 +343,34 @@ export class ReputationInitFailedError extends Error {
   }
 }
 
+/**
+ * Invokes `onLoopEvent` if configured; never throws, never rejects into the
+ * caller. See `AssayNodeConfig.onLoopEvent`'s doc comment for why this is
+ * the whole safety property this issue rests on: a throwing/rejecting
+ * `onLoopEvent` must never break the loop, and (unlike a plain
+ * `(event) => void` sink with only a synchronous try/catch) this also
+ * catches an async sink's *rejection*, not just a synchronous throw — an
+ * uncaught rejection from a bare `void`-typed callback would otherwise crash
+ * the process by default on modern Node, which is a strictly worse failure
+ * mode than "narration silently lost".
+ */
+function safeEmit(
+  onLoopEvent: AssayNodeConfig['onLoopEvent'],
+  stamp: (body: LoopEventVariant) => LoopEvent,
+  body: LoopEventVariant,
+): void {
+  if (!onLoopEvent) return;
+  const event = stamp(body);
+  try {
+    const outcome = onLoopEvent(event);
+    if (outcome && typeof (outcome as Promise<void>).then === 'function') {
+      (outcome as Promise<void>).catch(() => {});
+    }
+  } catch {
+    // Deliberately silent -- see AssayNodeConfig.onLoopEvent's doc comment.
+  }
+}
+
 export type AssayNodeConfig = {
   registry: RegistryPort;
   payments: PaymentsPort;
@@ -415,6 +444,41 @@ export type AssayNodeConfig = {
    * until the first finishes.
    */
   onSettleProgress?: (info: SettleProgress) => void;
+  /**
+   * Narrates the loop as it runs (issue #83): one optional hook, invoked at
+   * every point in register/discover/payAndCall/serve/challenge/verifyClaim/
+   * settle where a new LoopEvent fact becomes available. Absent by default
+   * and side-effect-free when absent -- no config, no events, no behaviour
+   * change, same contract onRegisterProgress/onSettleProgress already have.
+   *
+   * Narration failing must never lose a payment. If this throws, or returns
+   * a promise that rejects, the loop swallows it right where it was called
+   * and carries on exactly as if no hook were configured: no retry, no
+   * re-throw, no log line from core itself (core does not know if stdout is
+   * safe to write to -- apps/mcp runs its tool server over stdio JSON-RPC
+   * framing, where an errant console.log would corrupt the protocol). A
+   * consumer that wants to know its own narration code is broken must catch
+   * that itself, inside its own onLoopEvent.
+   *
+   * Called synchronously and never awaited: the loop's own timing is never a
+   * function of how fast (or slow, or hung) this hook is. This is also why
+   * settle()'s concurrent slash/reputation legs (#53) can emit interleaved
+   * LoopEvents exactly like their existing onSettleProgress ticks already do
+   * -- the event fires from the same .then() handler, not a second,
+   * separately-timed pass over the same data.
+   */
+  onLoopEvent?: (event: LoopEvent) => void | Promise<void>;
+  /**
+   * The `at`/`seq` stamper used to construct every `LoopEvent` this node
+   * emits (issue #83's `seq` graft, see `createEventStamper` in `events.ts`).
+   * Defaults to a fresh, node-private stamper. Pass your own when a
+   * composition root also synthesizes `LoopEvent`s of its own outside this
+   * node (concretely: apps/mcp's `rate()`, which lives in `live-node.ts` and
+   * is invisible to this node's event stream entirely -- see
+   * `createEventStamper`'s doc comment) and needs one shared, strictly
+   * increasing `seq` across both sources.
+   */
+  eventStamper?: (body: LoopEventVariant) => LoopEvent;
 };
 
 export type RegisterInput = {
@@ -592,6 +656,23 @@ export interface AssayNode {
    */
   challenge(jobId: string, claimKey: string): Promise<Verdict>;
   /**
+   * Read-only counterpart to challenge() (issue #83): routes to the same
+   * capability verify() through the same capability runtime, at each claim's
+   * own atBlock, and returns the Verdict -- but never transitions the job and
+   * never calls settle(). Lets the MCP verify_claim tool (and any other
+   * caller) ask "is this claim true?" before committing to a challenge. Costs
+   * exactly what challenge() costs (a real re-derivation of every claim
+   * against The Graph); it just does not spend the job's one
+   * served -> challenged transition to find out.
+   *
+   * Throws UnknownJobError if jobId does not exist, UnknownClaimError if
+   * claimKey names no claim the job carries -- both already-exported errors,
+   * no new error type needed. Unlike challenge(), does NOT require the job to
+   * be `served`: a job already challenged, slashed, or settled can still be
+   * re-verified, because nothing here depends on job status.
+   */
+  verifyClaim(jobId: string, claimKey: string): Promise<Verdict>;
+  /**
    * Settles an already-challenged job on `verdict` (SPEC.md §7 step 7, §9).
    *
    * - **Invalid** (the provider lied): slashes the provider's bond to
@@ -658,6 +739,8 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
   const jobs = config.jobs ?? createJobStore();
   const payPolicy = config.payPolicy ?? DEFAULT_PAY_DECISION_POLICY;
   const settlementPolicy = config.settlementPolicy ?? DEFAULT_SETTLEMENT_POLICY;
+  const stamp = config.eventStamper ?? createEventStamper();
+  const emit = (body: LoopEventVariant) => safeEmit(config.onLoopEvent, stamp, body);
 
   // Concurrency guard for `settle()`, not for correctness of a single
   // sequential caller (the job-store's own `served`/`challenged` transitions
@@ -683,33 +766,64 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
     if (payments.confirmPayment) {
       const provider = await registry.resolveProvider(input.provider);
       const expectedMemo = hashRequest(input.capabilityId, input.request);
+      emit({ step: 'pay', phase: 'confirming', txId: input.txId });
       const confirmation = await payments.confirmPayment({
         txId: input.txId,
         expectedAmountHbar: provider.manifest.priceHbar,
         expectedMemo,
       });
       if (!confirmation.confirmed) {
+        emit({ step: 'pay', phase: 'not-confirmed', txId: input.txId, reason: confirmation.reason });
         throw new PaymentNotConfirmedError(input.txId);
       }
+      emit({ step: 'pay', phase: 'confirmed', txId: input.txId });
     } else {
+      emit({ step: 'pay', phase: 'confirming', txId: input.txId });
       const confirmed = await payments.confirm(input.txId);
       if (!confirmed) {
+        emit({ step: 'pay', phase: 'not-confirmed', txId: input.txId });
         throw new PaymentNotConfirmedError(input.txId);
       }
+      emit({ step: 'pay', phase: 'confirmed', txId: input.txId });
     }
 
-    const { result, claims } = await capabilities.run(input.capabilityId, input.request);
-    // `jobs.create` itself rejects a `txId` already spent on a prior job
-    // (`DuplicatePaymentTxError`), closing the replay path regardless of
-    // which confirmation branch above ran.
-    return jobs.create({
-      provider: input.provider,
-      capabilityId: input.capabilityId,
-      request: input.request,
-      paymentTx: input.txId,
-      result,
-      claims,
-    });
+    try {
+      const { result, claims } = await capabilities.run(input.capabilityId, input.request);
+      // `jobs.create` itself rejects a `txId` already spent on a prior job
+      // (`DuplicatePaymentTxError`), closing the replay path regardless of
+      // which confirmation branch above ran.
+      const job = jobs.create({
+        provider: input.provider,
+        capabilityId: input.capabilityId,
+        request: input.request,
+        paymentTx: input.txId,
+        result,
+        claims,
+      });
+      emit({ step: 'serve', outcome: 'ok', job });
+      emit({ step: 'accept', job });
+      return job;
+    } catch (error) {
+      emit({
+        step: 'serve',
+        outcome: 'failed',
+        provider: input.provider,
+        capabilityId: input.capabilityId,
+        txId: input.txId,
+        error: error as Error,
+      });
+      throw error;
+    }
+  }
+
+  function requireKnownClaim(job: Job, claimKey: string): void {
+    if (!job.claims.some((claim) => claim.k === claimKey)) {
+      throw new UnknownClaimError(
+        job.jobId,
+        claimKey,
+        job.claims.map((claim) => claim.k),
+      );
+    }
   }
 
   async function challenge(jobId: string, claimKey: string): Promise<Verdict> {
@@ -717,22 +831,39 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
     if (job.status !== 'served') {
       throw new JobNotChallengeableError(jobId, job.status);
     }
-    if (!job.claims.some((claim) => claim.k === claimKey)) {
-      throw new UnknownClaimError(
-        jobId,
-        claimKey,
-        job.claims.map((claim) => claim.k),
-      );
-    }
+    requireKnownClaim(job, claimKey);
+
+    emit({ step: 'challenge', phase: 'started', jobId, claimKey });
 
     // The `Capability.verify` contract (types.ts, SPEC.md §6) re-derives and
     // compares the *whole* claim set, not just `claimKey` in isolation:
     // `claimKey` names which claim the challenger is disputing (and is
     // validated above), but the verifier itself decides validity over
     // everything the job claimed.
-    const verdict = await capabilities.verify(job.capabilityId, job.request, job.result, job.claims);
+    let verdict: Verdict;
+    try {
+      verdict = await capabilities.verify(job.capabilityId, job.request, job.result, job.claims);
+    } catch (error) {
+      emit({ step: 'challenge', phase: 'failed', jobId, claimKey, error: error as Error });
+      throw error;
+    }
 
     jobs.transition(jobId, 'challenged', { verdict });
+    emit({ step: 'verify', jobId, claimKey, claims: job.claims, verdict, committed: true });
+    return verdict;
+  }
+
+  /**
+   * `challenge()`'s read-only sibling (issue #83): same routing through
+   * `capabilities.verify()`, same claim-key validation, but no
+   * `jobs.transition()` call anywhere -- that missing line is the whole
+   * design. See `AssayNode.verifyClaim`'s doc comment for the full contract.
+   */
+  async function verifyClaim(jobId: string, claimKey: string): Promise<Verdict> {
+    const job = jobs.get(jobId);
+    requireKnownClaim(job, claimKey);
+    const verdict = await capabilities.verify(job.capabilityId, job.request, job.result, job.claims);
+    emit({ step: 'verify', jobId, claimKey, claims: job.claims, verdict, committed: false });
     return verdict;
   }
 
@@ -749,6 +880,20 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
     const start = Date.now();
     const elapsed = () => Date.now() - start;
     const onProgress = config.onSettleProgress;
+
+    // 'slashing'/'slash-confirmed'/'slash-failed' narrate the Hedera leg
+    // (LoopEvent step 'slash'); every other SettleProgress phase (including
+    // 'done', the loop's own final beat) narrates the ENS leg (step
+    // 'reputation') -- see SettlementLoopEvent's doc comment in events.ts.
+    function settleStepFor(phase: SettleProgress['phase']): 'slash' | 'reputation' {
+      return phase === 'slashing' || phase === 'slash-confirmed' || phase === 'slash-failed'
+        ? 'slash'
+        : 'reputation';
+    }
+    function settleTick(progress: SettleProgress, before?: Reputation): void {
+      onProgress?.(progress);
+      emit({ step: settleStepFor(progress.phase), progress, before });
+    }
 
     try {
       if (!verdict.valid) {
@@ -778,8 +923,8 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
         // not, because both were already in flight. `SlashFailedError`
         // below is what names that outcome so it is never ambiguous which
         // of the two actually happened.
-        onProgress?.({ phase: 'slashing', elapsedMs: elapsed() });
-        onProgress?.({ phase: 'writing-reputation', elapsedMs: elapsed() });
+        settleTick({ phase: 'slashing', elapsedMs: elapsed() });
+        settleTick({ phase: 'writing-reputation', elapsedMs: elapsed() }, provider.reputation);
 
         // Both calls are made here, immediately, one right after the other
         // with no `await` between them -- that is what actually starts them
@@ -796,18 +941,21 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
         const reputationPromise = registry.updateReputation(job.provider, reputationDelta);
 
         slashPromise.then(
-          (result) => onProgress?.({ phase: 'slash-confirmed', elapsedMs: elapsed(), txId: result.txId }),
-          () => onProgress?.({ phase: 'slash-failed', elapsedMs: elapsed() }),
+          (result) => settleTick({ phase: 'slash-confirmed', elapsedMs: elapsed(), txId: result.txId }),
+          () => settleTick({ phase: 'slash-failed', elapsedMs: elapsed() }),
         );
         reputationPromise.then(
           (result) =>
-            onProgress?.({
-              phase: 'reputation-confirmed',
-              elapsedMs: elapsed(),
-              txHash: result.txHash,
-              reputation: result.reputation,
-            }),
-          () => onProgress?.({ phase: 'reputation-failed', elapsedMs: elapsed() }),
+            settleTick(
+              {
+                phase: 'reputation-confirmed',
+                elapsedMs: elapsed(),
+                txHash: result.txHash,
+                reputation: result.reputation,
+              },
+              provider.reputation,
+            ),
+          () => settleTick({ phase: 'reputation-failed', elapsedMs: elapsed() }, provider.reputation),
         );
 
         const [slashOutcome, reputationOutcome] = await Promise.allSettled([slashPromise, reputationPromise]);
@@ -833,7 +981,7 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
         // `ReputationUpdateFailedError` has always protected (SPEC.md §9's
         // "not atomic across networks").
         const slashed = jobs.transition(jobId, 'slashed', { verdict });
-        onProgress?.({ phase: 'done', elapsedMs: elapsed(), job: slashed });
+        settleTick({ phase: 'done', elapsedMs: elapsed(), job: slashed });
 
         if (reputationOutcome.status === 'rejected') {
           throw new ReputationUpdateFailedError(jobId, slashed, reputationOutcome.reason);
@@ -851,20 +999,20 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
       const provider = await registry.resolveProvider(job.provider);
       const settled = jobs.transition(jobId, 'settled', { verdict });
 
-      onProgress?.({ phase: 'writing-reputation', elapsedMs: elapsed() });
+      settleTick({ phase: 'writing-reputation', elapsedMs: elapsed() }, provider.reputation);
       try {
         const { txHash, reputation } = await registry.updateReputation(
           job.provider,
           computeChallengeFailedReputationDelta(provider.reputation, settlementPolicy),
         );
-        onProgress?.({ phase: 'reputation-confirmed', elapsedMs: elapsed(), txHash, reputation });
+        settleTick({ phase: 'reputation-confirmed', elapsedMs: elapsed(), txHash, reputation }, provider.reputation);
       } catch (cause) {
-        onProgress?.({ phase: 'reputation-failed', elapsedMs: elapsed() });
-        onProgress?.({ phase: 'done', elapsedMs: elapsed(), job: settled });
+        settleTick({ phase: 'reputation-failed', elapsedMs: elapsed() }, provider.reputation);
+        settleTick({ phase: 'done', elapsedMs: elapsed(), job: settled });
         throw new ReputationUpdateFailedError(jobId, settled, cause);
       }
 
-      onProgress?.({ phase: 'done', elapsedMs: elapsed(), job: settled });
+      settleTick({ phase: 'done', elapsedMs: elapsed(), job: settled });
       return settled;
     } finally {
       settlingJobIds.delete(jobId);
@@ -877,10 +1025,15 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
       const onProgress = config.onRegisterProgress;
       const elapsed = () => Date.now() - start;
 
+      function tick(progress: RegisterProgress): void {
+        onProgress?.(progress);
+        emit({ step: 'register', progress });
+      }
+
       // 1. Bond first: SPEC.md §5's `assay:manifest.bondRef` must be the real
       // reference this transaction returns, so nothing can be published
       // before it exists.
-      onProgress?.({ phase: 'posting-bond', elapsedMs: elapsed() });
+      tick({ phase: 'posting-bond', elapsedMs: elapsed() });
       const { bondRef, txId: bondTxId } = await payments.postBond(bondHbar);
 
       const fullManifest: Manifest = { ...manifest, bondRef };
@@ -888,7 +1041,7 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
       // 2. Manifest, now carrying the real bondRef. If this fails, the bond
       // already happened for real -- surface that as ManifestPublishFailedError
       // rather than letting the caller believe a retry of register() is free.
-      onProgress?.({ phase: 'publishing-manifest', elapsedMs: elapsed(), bondRef, bondTxId });
+      tick({ phase: 'publishing-manifest', elapsedMs: elapsed(), bondRef, bondTxId });
       let manifestTxHash: string;
       try {
         ({ txHash: manifestTxHash } = await registry.publishManifest(name, fullManifest));
@@ -904,7 +1057,7 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
       // treats an unset assay:rep as (matching assessment.ts's "unproven"
       // 0-job baseline); on a re-registration it merges onto whatever
       // score/jobs/slashes the name already carries, so history survives.
-      onProgress?.({ phase: 'initializing-reputation', elapsedMs: elapsed(), bondRef, manifestTxHash });
+      tick({ phase: 'initializing-reputation', elapsedMs: elapsed(), bondRef, manifestTxHash });
       let reputationTxHash: string;
       let reputation: Reputation;
       try {
@@ -914,12 +1067,19 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
       }
 
       const result: RegisterResult = { bondRef, bondTxId, manifestTxHash, reputationTxHash, reputation };
-      onProgress?.({ phase: 'done', elapsedMs: elapsed(), result });
+      tick({ phase: 'done', elapsedMs: elapsed(), result });
       return result;
     },
 
     async discover(name) {
-      return registry.resolveProvider(name);
+      try {
+        const provider = await registry.resolveProvider(name);
+        emit({ step: 'discover', outcome: 'ok', name, provider });
+        return provider;
+      } catch (error) {
+        emit({ step: 'discover', outcome: 'failed', name, error: error as Error });
+        throw error;
+      }
     },
 
     async assess(name) {
@@ -931,11 +1091,13 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
       const provider = await registry.resolveProvider(name);
       const assessment = assessProvider(provider);
       const decision = evaluatePayDecision(assessment, payPolicy);
+      emit({ step: 'pay', phase: 'assessed', name, assessment, decision });
       if (!decision.pay) {
         throw new PayDeclinedError(name, assessment, decision.reason, decision.violations);
       }
       const requestHash = hashRequest(capabilityId, request);
       const { txId } = await payments.pay(provider.manifest.priceHbar, requestHash);
+      emit({ step: 'pay', phase: 'paid', name, txId, amountHbar: provider.manifest.priceHbar });
       const job = await serve({ provider: name, capabilityId, request, txId });
       return { txId, job };
     },
@@ -943,6 +1105,8 @@ export function createAssayNode(config: AssayNodeConfig): AssayNode {
     serve,
 
     jobs,
+
+    verifyClaim,
 
     challenge,
 
