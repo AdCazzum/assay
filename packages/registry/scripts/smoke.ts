@@ -19,6 +19,18 @@
  * first (e.g. in the ENS Manager app: app.ens.domains -> your name -> +
  * Subname -> assign it a resolver, or set one explicitly if you create it
  * some other way). See the PR notes for how this was verified.
+ *
+ * This script always writes to a *subname* (`<label>.${ENS_PARENT_NAME}`),
+ * never to the bare parent name itself, by construction -- the template
+ * above always appends `.${ENS_PARENT_NAME}`, so there is no SMOKE_LABEL
+ * value that resolves to the parent alone. That distinction matters because
+ * the bare parent (`assay.eth`) once carried a stray `assay:manifest` record
+ * with a placeholder `verifierHash` this script has never produced
+ * (`"sha256:live-smoke"`, not this script's `"0xsmoke"`); it came from an
+ * earlier manual write made directly against the parent outside of any
+ * script here, not from a run of this file. That stray record has since
+ * been cleared on-chain (empty string), so `assay.eth` no longer carries
+ * unused manifest litter (ens-F3-stale-manifest-on-parent-name).
  */
 
 import { config as loadEnv } from 'dotenv';
