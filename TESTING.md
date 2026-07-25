@@ -32,9 +32,9 @@ instead. Set `HEDERA_KEY_TYPE=ecdsa` if you are unsure. See `FEEDBACK.md`.
 pnpm -r typecheck && pnpm -r test
 ```
 
-288 tests across 9 packages. No network, no credentials. If this is red, stop here.
+394 tests across 9 packages. No network, no credentials. If this is red, stop here.
 
-## Level 1 — the narration, offline
+## Level 1 — the offline fallback
 
 ```bash
 pnpm --filter @assay/dashboard exec tsx src/index.ts slash 0    # the climax
@@ -145,33 +145,44 @@ path, outcome decided by the verifier.
 target `vantage.assay.eth`, not the good provider, so rehearsing the climax does not damage the
 record the demo's opening depends on. Override with `WATCHDOG_PROVIDER_NAME` if you need to.
 
-## Level 6 — the real requester agent
+## Level 6 — the demo itself
 
 ```bash
-bash -lc 'eval "$(~/.local/bin/mise activate bash)"; pnpm --filter @assay/mcp agent:live'
+./scripts/demo.sh        # reset the two providers' opening state (~57s)
+claude                   # open Claude Code in this repo
+/assay-demo              # run the prepared prompt
 ```
 
-Both halves of that are load-bearing, and having only one is the common failure:
+`.mcp.json` registers the `assay` server, so a real Claude Code session drives the real loop
+and renders its own reasoning and tool calls. Confirm the server first with `claude mcp list`,
+which should report `assay: ... Connected`.
 
-- `CLAUDE_CODE_OAUTH_TOKEN` is exported **above** the interactive guard in `~/.bashrc`, so a
-  login shell has it. Without it the agent dies with `Not logged in`.
-- `mise` (node, pnpm) is activated **below** that guard, so a login shell does **not** have it.
-  Without it you get `pnpm: command not found`.
+Expect roughly two minutes and about \$0.70 of API. Nothing is pressed: the agent chooses
+which providers to consult, which to pay, what to verify and whether to challenge.
 
-So plain `bash -lc 'pnpm ...'` does not work. `./scripts/demo.sh` wraps both if you would
-rather not remember.
+**The reset is not optional.** Without it the good provider's reputation is whatever the last
+run left behind, the agent correctly declines to pay, and the opening cannot happen.
 
-Takes 42 to 57 seconds, mostly the agent thinking, and should end `VERDICT: PAID`. The two
-fixture runs are the ones that prove there is no hidden branch:
+The two fixture runs are what prove there is no hidden branch in our code, one prompt reaching
+different conclusions against different providers:
 
 ```bash
 bash -lc 'eval "$(~/.local/bin/mise activate bash)"; pnpm --filter @assay/mcp agent:bad-provider'   # -> DECLINED
 bash -lc 'eval "$(~/.local/bin/mise activate bash)"; pnpm --filter @assay/mcp agent:good-provider'  # -> PAID
 ```
 
-One prompt (`apps/mcp/agent/prompt.md`, which sets a goal and a budget and never says
-whether to pay), three providers, three outcomes the model reached on its own. Transcripts
-land in `apps/mcp/agent/transcripts/` and previous ones are committed.
+Both halves of that invocation are load-bearing, and having only one is the common failure:
+
+- `CLAUDE_CODE_OAUTH_TOKEN` is exported **above** the interactive guard in `~/.bashrc`, so a
+  login shell has it. Without it the agent dies with `Not logged in`.
+- `mise` (node, pnpm) is activated **below** that guard, so a login shell does **not** have it.
+  Without it you get `pnpm: command not found`.
+
+So plain `bash -lc 'pnpm ...'` does not work, which is why `./scripts/demo.sh` exists.
+
+Committed transcripts are in `apps/mcp/agent/transcripts/`, including a full Claude Code
+session whose reputation changes were verified against the chain afterwards rather than taken
+from the transcript.
 
 ## Before every rehearsal
 

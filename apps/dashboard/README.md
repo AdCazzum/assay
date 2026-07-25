@@ -1,5 +1,27 @@
 # @assay/dashboard
 
+## What this is now: the offline fallback
+
+Nothing drives this live any more. `apps/demo` was its only consumer and was deleted
+when the demo moved to a real Claude Code session, which renders its own reasoning and
+tool calls far better than a purpose-built screen could, and far more credibly.
+
+That leaves this package doing the one job nothing else does: **replaying a captured run
+with no network at all.**
+
+```bash
+pnpm --filter @assay/dashboard exec tsx src/index.ts slash    # the climax
+pnpm --filter @assay/dashboard exec tsx src/index.ts happy    # the honest path
+```
+
+Add a delay in milliseconds as a second argument to watch it at demo pace. The fixtures
+were captured from a real run, so the transaction ids, blocks and claim values on screen
+are real ones, not plausible-looking inventions.
+
+That makes this the answer to dead conference wifi, which is otherwise the one failure
+the live demo cannot survive. Keep it working.
+
+
 Narrates the Assay loop on screen (issue #30, SPEC.md §10). This is what the
 audience and the judges look at while everything else in the demo happens.
 
@@ -25,7 +47,7 @@ something that drives or polls the loop:
   tests. This is the **only** file here that imports `@assay/core` — every
   other module stays exactly as core-independent as before.
 - `fixtures/` — two canonical event sequences, **captured from a real run**
-  (`apps/demo/scripts/capture-fixtures.ts`, issue #85) rather than
+  (captured from a real run, issue #85) rather than
   hand-written: `happy-path.ts` (discover through accept against the real
   good provider, no challenge) and `slash.ts` (the lying-provider climax:
   discover through the ENS reputation write, against the real sacrificial
@@ -33,7 +55,7 @@ something that drives or polls the loop:
   Every tx id, block number and claim value in them is genuine; regenerate
   them by re-running the capture script rather than hand-editing.
 
-`apps/demo` is what actually drives this live: it composes the real adapters
+Nothing drives this live any more. `apps/demo` used to: it composed the real adapters
 and `@assay/core`'s loop, wires each `AssayNode`'s `onLoopEvent` through
 `createCoreEventMapper()`, and pushes the mapped events into this package's
 renderer. This package itself never imports a network client and never
@@ -105,18 +127,18 @@ ASSAY — reputation + payment rail
 `Register` stays `pending` because neither the fixture nor a real demo run
 ever calls `AssayNode.register()`: registration (the bond + the two ENS
 writes) is an operator action `packages/registry/scripts/reset-demo-state.ts`
-performs ahead of time, not a beat either the fixture or `apps/demo`'s own
+performs ahead of time, not a beat either the fixture or the deleted runner's own
 four keys narrate. That is deliberate, not a bug: it shows what a step that
 never fires looks like on screen.
 
 ## Live wiring
 
-`apps/demo` composes the real adapters, `@assay/core`'s loop and this
+The deleted `apps/demo` composed the real adapters, `@assay/core`'s loop and this
 package: it wires each `AssayNode`'s `onLoopEvent` through
 `from-core.ts`'s `createCoreEventMapper()` and pushes the mapped events into
-this package's `render()` (via `apps/demo/src/screen.ts`, which also adds the
+this package's `render()` (via its screen wrapper, which also added the
 demo's own key-legend/status footer underneath the frame). See
-`apps/demo/src/session.ts` and `apps/demo/src/main.ts` for exactly how, and
+the git history of `apps/demo` for exactly how, and
 `docs/demo-run-sheet.md` for the running order. This package itself still
 never imports a network client and never drives the loop — `from-core.ts` is
 the one file here that knows core's vocabulary exists, and even it only maps,

@@ -14,19 +14,29 @@ mocked**. Read it before writing code. Do not re-derive the design.
 
 ### Skills to use
 
-- **mcp-builder** — for `apps/mcp` (the MCP server exposing discover / pay_and_call /
-  challenge / rate). This is the agent-native surface a real Claude agent drives in
-  the demo.
 - **superpowers:test-driven-development** — for `packages/cap-rugscore`, especially
   `verify()`. The verifier is the crux and the demo climax; write the lying-provider
   test first.
 - **superpowers:systematic-debugging** — when an SDK integration misbehaves (Hedera
-  and ENS testnet plumbing will).
+  and ENS testnet plumbing will, and every real bug in this repo so far has looked
+  like something other than what it was).
+
+This used to mandate **mcp-builder** for `apps/mcp`. That skill is not installed on
+this machine, so the server was built from the SDK's own type definitions instead and
+the rule pointed at nothing. Install it or leave it out; do not reinstate a rule
+nobody can follow.
 
 ### Hard rules
 
-- **Spike the Hedera rail in the first ~2 hours** before building the loop on it.
-  Raw HBAR transfer is the safe fallback. (See AGENTS.md.)
+- **Verify against the live network, not only against fakes.** This is the rule this
+  repo learned the hard way, three times. The payment gate, the loop-event sink and
+  the default provider list each shipped with every unit test green and broke on first
+  real contact, because the fakes model the configured happy path rather than what the
+  chain and the tooling actually do. If a change touches Hedera, ENS or The Graph, run
+  it for real before you believe it.
+- **The demo is a real Claude Code session**, not an app in this repo. Two custom
+  runners were built and deleted. If you are tempted to build a third, read
+  `docs/demo-run-sheet.md`'s closing section first.
 - **Never commit secrets or `SPEC.md`.** Both are gitignored; keep them that way.
 - **Real vs mocked** is defined in `SPEC.md` §11. Never mock the actual sponsor
   integration a bounty scores (a faked ENS write, a hand-rolled paywall dressed up

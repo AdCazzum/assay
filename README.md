@@ -58,8 +58,30 @@ an MCP server a real Claude agent drives live):
 
 ```
 packages/   core, registry (ENS), payments (Hedera), graph (The Graph), cap-rugscore
-apps/       mcp (server), provider, watchdog, dashboard
+apps/       mcp (the server, nine tools), provider, watchdog, dashboard
 ```
+
+## Running the demo
+
+Open **Claude Code** in this repo and run **`/assay-demo`**. `.mcp.json` registers the `assay`
+server, so a real session drives the real loop and renders its own reasoning and tool calls.
+
+```bash
+./scripts/demo.sh    # reset the two providers' opening state first (~57s)
+claude               # then /assay-demo
+```
+
+There is no custom demo application, deliberately. Two earlier attempts were built and
+deleted, and the reason is worth stating: **a renderer we write is less credible than the tool
+the audience already uses.** A judge cannot verify that our screen showed them the truth. In
+Claude Code they see the MCP server badge, the real tool names, the arguments, and the raw
+JSON that came back.
+
+`.claude/commands/assay-demo.md` holds the prompt. It sets a goal and a budget and never names
+the provider to distrust, the claim to check, or when to challenge.
+
+For a run with no network at all, `pnpm --filter @assay/dashboard exec tsx src/index.ts slash`
+replays a captured run.
 
 ## What actually works
 
@@ -72,7 +94,7 @@ and the reasoning behind each design choice are in the pull requests.
 | **The Graph** | `getTokenSignals(token, atBlock)` issues block-pinned subgraph queries. Two different blocks return genuinely different values, and a block outside the indexed range fails loudly rather than silently returning live data. |
 | **ENS on Sepolia** | `assay:manifest` and `assay:rep` are live text records. Reputation writes are real; nothing is cached and presented as written. |
 | **The verifier** | re-derives each claim at that claim's own `atBlock` and compares within per-signal tolerances. |
-| **The agent** | a real headless Claude agent drives the loop through the MCP server and decides for itself whether to pay. |
+| **The agent** | a real Claude Code session drives the loop through the MCP server's nine tools and decides for itself whether to pay, whether to verify, and whether to challenge. |
 
 The loop has run end to end, in both directions, on all three networks:
 
@@ -86,8 +108,8 @@ nothing about its verifier.
 
 ### The agent genuinely decides
 
-`apps/mcp/agent/prompt.md` gives the agent a goal and a budget and never tells it whether
-to pay. Same prompt, three providers, three outcomes it reached on its own: `DECLINED`
+`.claude/commands/assay-demo.md` gives the agent a goal and a budget and never tells it
+whether to pay. Same prompt, three providers, three outcomes it reached on its own: `DECLINED`
 against a provider with slashes, `PAID` against a clean one. Transcripts are committed in
 `apps/mcp/agent/transcripts/`.
 
