@@ -110,7 +110,7 @@ describe('assay MCP server', () => {
       expect(result.structuredContent).toEqual(FIXTURE_JOB);
       const text = (result.content as Array<{ type: string; text: string }>)[0].text;
       expect(text).toContain(FIXTURE_JOB.jobId);
-      expect(text).toContain('hasActiveMintRole');
+      expect(text).toContain('topPoolConcentrationPct');
     });
 
     it('rejects a missing request without calling the node', async () => {
@@ -177,16 +177,16 @@ describe('assay MCP server', () => {
 
   describe('challenge', () => {
     it('calls through to the node with jobId and claimKey', async () => {
-      const challenged = { ...FIXTURE_JOB, status: 'slashed' as const, verdict: { valid: false, badClaim: 'hasActiveMintRole', reason: 'mint role is active' } };
+      const challenged = { ...FIXTURE_JOB, status: 'slashed' as const, verdict: { valid: false, badClaim: 'topPoolConcentrationPct', reason: 'the top pool concentration was understated' } };
       node.jobsById.set(FIXTURE_JOB.jobId, challenged);
       const { client } = await connect(node);
 
       const result = await client.callTool({
         name: 'challenge',
-        arguments: { jobId: FIXTURE_JOB.jobId, claimKey: 'hasActiveMintRole' },
+        arguments: { jobId: FIXTURE_JOB.jobId, claimKey: 'topPoolConcentrationPct' },
       });
 
-      expect(node.challengeCalls).toEqual([{ jobId: FIXTURE_JOB.jobId, claimKey: 'hasActiveMintRole' }]);
+      expect(node.challengeCalls).toEqual([{ jobId: FIXTURE_JOB.jobId, claimKey: 'topPoolConcentrationPct' }]);
       expect(result.isError).toBeFalsy();
       const text = (result.content as Array<{ type: string; text: string }>)[0].text;
       expect(text).toContain('invalid');
