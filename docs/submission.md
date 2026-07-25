@@ -112,6 +112,56 @@ The fix was a second funded account, not a weaker check. A payment now reads:
 
 which is what makes verifying an amount meaningful in the first place.
 
+**Two Hedera services, and the second one is the non-obvious use.** Payments are HBAR
+transfers. The audit trail is the **Hedera Consensus Service**, and it attests the one
+artefact that was still asking to be trusted. Every other claim this project makes is
+re-derivable by a stranger: the Graph queries are block-pinned, the ENS records are
+public, the transfers are on a public mirror node. The loop's event log was not. It is a
+file on my disk, and I could have rewritten it after the run, which is exactly the
+standard the project accuses star ratings of failing.
+
+So the sink folds every line it writes into a SHA-256 chain and submits the head of that
+chain to a topic at each turning point of the loop (`pay`, `serve`, `challenge`, `verify`,
+`slash`, and once at close for the tail). It is deliberately not a copy of the events onto
+the topic: six ~100-byte messages cover a run of any length, they leak no job data, and a
+match proves strictly more than a copy would. A copy shows those events existed; a chain
+head shows that **no line anywhere before it was added, removed, reordered or edited**,
+because any of those reshuffles every hash after it. The consensus timestamp is Hedera's,
+so *when* that state existed is attested too, and a log rewritten later cannot produce
+anchors that were already stamped mid-run.
+
+**Evidence a judge can check, with no credentials of mine.** Topic
+[`0.0.9753542`](https://hashscan.io/testnet/topic/0.0.9753542):
+
+```bash
+pnpm --filter @assay/mcp exec tsx scripts/verify-anchors.ts \
+  --topic 0.0.9753542 --file docs/evidence/anchored-runs.ndjson
+```
+
+That log is committed, so this runs on a fresh clone with nothing of mine up. It holds
+two live runs of the anchoring path and prints `12/12 anchors reproduce from this file`,
+one row per anchor with the consensus timestamp Hedera assigned it. Change a single
+`amountHbar` in a copy and the same command gives `8/12`, exit code non-zero, with each
+run's last two anchors flipping to `MISMATCH` independently and the boundary locating the
+edit to after seq 9 in each. `docs/evidence/README.md` has both commands verbatim. The raw
+messages are readable straight off the public mirror node at
+`https://testnet.mirrornode.hedera.com/api/v1/topics/0.0.9753542/messages`.
+
+**One bug worth admitting, because it is the interesting one.** The topic id lives in
+`.env`, so a single topic carries anchors from every run while any one log holds a subset.
+The first verifier matched an anchor to whichever run reproduced it and called the rest
+mismatches, which meant the second run against a topic reported six failures for a log
+that was perfectly intact. Unit tests did not catch it, because a single-run fixture
+cannot express the case. It is a smaller instance of the same lesson this repo keeps
+relearning, and it mattered more than a cosmetic bug would: a verifier that cries wolf
+teaches its reader to ignore the one word in the output that has to mean something. The
+fix is a run id in the header line and in every anchor, so "belongs to another run" and
+"belongs to my run and does not reproduce" cannot look alike.
+
+Anchoring costs 1.0s to 2.5s per message from submit to receipt (12 samples, median
+~1.7s), and it runs off the hot path: a topic outage costs a run its audit trail, never
+its payment.
+
 ### The Graph — Best AI Use Case
 
 **What the integration does.** `getTokenSignals(token, atBlock)` issues block-pinned
@@ -329,3 +379,58 @@ starts from a known point. Do not run it on camera.
 - **Fallback.** Record this after a rehearsal that went well, and keep the clip ready.
   Conference wifi affects every step here; the ENS write drifting to its slow end is
   survivable live with narration, a dead network is not.
+
+## 8. Business model, network impact, and what's next
+
+Full versions in the repo; this is the summary for a form field.
+
+**Who pays and for what.** Two revenue lines, both denominated in flows that already
+exist: a small protocol fee on each settled call, and a minority share of slashed bonds
+(the majority goes to the challenger, because that is what pays for watchdogs to exist).
+Listing and reputation reads stay free, because a track record you have to pay to read is
+one most buyers skip.
+
+The unusual thing about the cost structure is that **verification is the cost structure**,
+and it is variable per challenge rather than per call. That makes the choice of capability
+an economic decision, not a demo one: rug-pull scoring is expensive to compute and cheap
+to spot-check, so the verifier costs a fraction of the service it polices. A capability
+where checking costs as much as doing has no margin and I would not add one. The other
+real cost is ENS writes: free on Sepolia, but at mainnet gas a `setText` per job does not
+survive a sub-cent call, and the fix (batched epoch writes, or CCIP-read so the record
+lives offchain and is proved on read) is Phase 1 work rather than an unknown.
+
+Why it cannot be Web2, in one line each: the bond has to be seizable by rule rather than
+by a company, the reputation has to outlive the platform because it lives under the
+provider's own ENS name, the counterparties are agents that meet exactly once, and the
+audit trail must not be ours to edit. See [`docs/business-model.md`](business-model.md)
+for the full Lean Canvas, including what I do not know yet.
+
+**Impact on Hedera, measured rather than projected.** Per job: a paid call with no
+challenge is 1 transfer plus 3 consensus messages, four transactions; a challenged and
+slashed one is 2 transfers plus 6 messages, eight. Provider onboarding is one account and
+one bond transfer each, so account growth is linear in supply. The anchoring is what makes
+the multiplier 4 to 8 rather than 1, and it scales with loop events rather than with value
+moved, so it holds identically at any price point.
+
+Being straight about the size: 100 providers serving 100 calls a day is roughly 40,000
+transactions a day, about 0.46 TPS. That is real traffic and it is not a large number, and
+I am not going to extrapolate a headline figure from a hackathon. The argument worth making
+is the shape, plus the distribution surface: this ships as an MCP server, so a Claude Code
+user adds one config line and then watches real Hedera transaction ids scroll past in their
+own terminal, which is exposure to an audience not otherwise looking at Hedera.
+
+**Next.** [`docs/roadmap.md`](roadmap.md) has the order and the reasoning. Phase 1 is
+entirely about closing gaps already disclosed above: the challenger deposit first (the
+incentive model is only sound with both sides bonded), then affordable reputation writes,
+then a second capability written by someone who is not me, which is the only real test of
+whether the port boundary generalizes.
+
+**Validation, honestly.** Two feedback cycles are running and neither is a survey.
+`FEEDBACK.md` is a report to all three sponsors written from things that cost me time
+during the build, with the measurement or error message behind each item; two of them
+changed this build. The second is the agent itself: the demo prompt never names the
+provider to distrust, so each run tests whether the interface is legible to the only kind
+of user this has, and it already returned a finding I would not have got by inspection
+(it declined a provider because a 1.00x bond makes lying break-even). What there is not:
+external users, trials, or revenue. Ten provider interviews are the next cycle and they
+have not happened.
