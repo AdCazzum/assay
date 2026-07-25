@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assay — reputation and payment rail for agent-to-agent services</title>
+<style>
+  /* ---------------------------------------------------------------
+     Assay pitch deck. One file, no dependencies, no build, no network.
+     Screen: a keyboard-driven deck.  Print: a two-page leave-behind.
+     --------------------------------------------------------------- */
+
+  :root {
+    --bg:        #07090c;
+    --panel:     #0e1319;
+    --line:      #1d2733;
+    --fg:        #dbe3ec;
+    --dim:       #8394a6;
+    --faint:     #56657a;
+    --ens:       #6c8cff;
+    --hedera:    #b58cff;
+    --graph:     #35d6e5;
+    --ok:        #56d38a;
+    --bad:       #ff6b5e;
+    --warn:      #f5c451;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", "DejaVu Sans Mono", "Consolas", monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--fg);
+    font-family: var(--mono);
+    font-size: clamp(13px, 1.15vw, 19px);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body::before {
+    /* faint scanline wash, so it reads as a terminal without being a gimmick */
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 5;
+    background: repeating-linear-gradient(180deg, rgba(255,255,255,.014) 0 1px, transparent 1px 3px);
+  }
+
+  /* ---------- deck chrome ---------- */
+
+  #deck { height: 100%; }
+
+  .slide {
+    display: none;
+    height: 100%;
+    padding: 4.5vh 6vw 7vh;
+    flex-direction: column;
+    justify-content: center;
+    overflow: hidden;
+    max-width: 1500px;
+    margin: 0 auto;
+    animation: in .18s ease-out;
+  }
+  /* content wrapper the fitter scales down when a slide would overflow the
+     projector we are handed. Never scales up: 1 is the designed size. */
+  .fit { width: 100%; transform-origin: center center; }
+  .slide.on { display: flex; }
+  @keyframes in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  .kicker {
+    color: var(--faint); font-size: .72em; letter-spacing: .22em;
+    text-transform: uppercase; margin-bottom: 1.4em;
+  }
+  .kicker b { color: var(--dim); font-weight: 600; }
+
+  h1 { font-size: clamp(3rem, 8vw, 7rem); line-height: .92; margin: 0 0 .2em; letter-spacing: -.03em; }
+  h2 { font-size: clamp(1.5rem, 3.1vw, 2.7rem); line-height: 1.12; margin: 0 0 .7em; letter-spacing: -.02em; }
+  h3 { font-size: 1em; margin: 0 0 .35em; color: var(--fg); letter-spacing: .01em; }
+  p  { margin: 0 0 .85em; max-width: 62ch; color: var(--dim); }
+  p.lede { color: var(--fg); font-size: 1.12em; max-width: 58ch; }
+  strong { color: var(--fg); font-weight: 700; }
+  em { color: var(--warn); font-style: normal; }
+  a { color: var(--graph); }
+
+  .rule { height: 1px; background: var(--line); margin: 1.4em 0; }
+
+  /* ---------- reusable bits ---------- */
+
+  .cols { display: grid; gap: 1.5em; grid-template-columns: repeat(auto-fit, minmax(15em, 1fr)); }
+  .cols.two { grid-template-columns: repeat(auto-fit, minmax(22em, 1fr)); }
+  .cols.quad { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 900px) { .cols.quad { grid-template-columns: 1fr; } }
+
+  .card {
+    border: 1px solid var(--line); border-left-width: 3px;
+    background: var(--panel); padding: 1em 1.1em; border-radius: 3px;
+  }
+  .card h3 { display: flex; align-items: baseline; gap: .6em; }
+  .card p:last-child { margin-bottom: 0; }
+  .card .tag { font-size: .68em; letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
+  .card.ens    { border-left-color: var(--ens); }
+  .card.ens h3    { color: var(--ens); }
+  .card.hedera { border-left-color: var(--hedera); }
+  .card.hedera h3 { color: var(--hedera); }
+  .card.graph  { border-left-color: var(--graph); }
+  .card.graph h3  { color: var(--graph); }
+  .card.ok     { border-left-color: var(--ok); }
+  .card.bad    { border-left-color: var(--bad); }
+  .card.warn   { border-left-color: var(--warn); }
+
+  ul { margin: 0 0 .9em; padding-left: 1.15em; color: var(--dim); }
+  li { margin-bottom: .38em; }
+  li::marker { color: var(--faint); }
+  ul.bare { list-style: none; padding-left: 0; }
+  ul.bare li::before { content: "› "; color: var(--faint); }
+
+  table { border-collapse: collapse; width: 100%; font-size: .92em; }
+  td, th { text-align: left; padding: .5em .9em .5em 0; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--dim); }
+  th { color: var(--faint); font-weight: 400; font-size: .8em; letter-spacing: .12em; text-transform: uppercase; }
+  td.k { color: var(--fg); white-space: nowrap; }
+  td.n { color: var(--fg); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  code, .mono { font-family: var(--mono); color: var(--fg); }
+  code { background: #121a22; border: 1px solid var(--line); border-radius: 2px; padding: .05em .35em; font-size: .9em; }
+
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
+    padding: 1em 1.1em; overflow: auto; margin: 0 0 1em; color: var(--dim);
+    font-size: .88em; line-height: 1.5;
+  }
+  pre b { color: var(--fg); font-weight: 600; }
+
+  .quote {
+    border-left: 3px solid var(--warn); padding: .2em 0 .2em 1.1em;
+    color: var(--fg); font-size: 1.05em; max-width: 68ch;
+  }
+
+  .big { font-size: clamp(1.6rem, 3.4vw, 2.8rem); line-height: 1.15; letter-spacing: -.02em; color: var(--fg); max-width: 22ch; }
+
+  .stat { display: flex; flex-direction: column; gap: .1em; }
+  .stat .v { font-size: clamp(1.6rem, 3.2vw, 2.6rem); color: var(--fg); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .stat .l { color: var(--faint); font-size: .78em; letter-spacing: .1em; text-transform: uppercase; }
+
+  /* ---------- the loop diagram ---------- */
+
+  .loop { display: flex; flex-wrap: wrap; align-items: stretch; gap: .5em; margin: .4em 0 1.4em; }
+  .step {
+    border: 1px solid var(--line); border-top: 2px solid var(--faint);
+    background: var(--panel); padding: .6em .8em; border-radius: 3px; min-width: 8.5em; flex: 1 1 8.5em;
+  }
+  .step .w { color: var(--faint); font-size: .68em; letter-spacing: .14em; text-transform: uppercase; }
+  .step .t { color: var(--fg); }
+  .step.ens    { border-top-color: var(--ens); }    .step.ens .w    { color: var(--ens); }
+  .step.hedera { border-top-color: var(--hedera); } .step.hedera .w { color: var(--hedera); }
+  .step.graph  { border-top-color: var(--graph); }  .step.graph .w  { color: var(--graph); }
+  .arrow { align-self: center; color: var(--faint); }
+
+  /* ---------- footer / hud ---------- */
+
+  .hud {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
+    display: flex; align-items: center; gap: 1.2em;
+    padding: .7em 6vw; border-top: 1px solid var(--line);
+    background: linear-gradient(to top, var(--bg) 70%, transparent);
+    color: var(--faint); font-size: .74em; letter-spacing: .1em; text-transform: uppercase;
+  }
+  .hud .grow { flex: 1; }
+  .hud .bar { position: absolute; left: 0; top: -1px; height: 2px; background: var(--graph); transition: width .18s ease-out; }
+  .hud kbd {
+    border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3px;
+    padding: 0 .35em; color: var(--dim); font-family: var(--mono); font-size: 1em;
+  }
+
+  #notes {
+    position: fixed; left: 0; right: 0; bottom: 2.6em; z-index: 6;
+    display: none; padding: .9em 6vw; border-top: 1px solid var(--line);
+    background: #0b1016; color: var(--dim); font-size: .85em; max-height: 32vh; overflow: auto;
+  }
+  #notes.on { display: block; }
+  #notes b { color: var(--warn); letter-spacing: .12em; text-transform: uppercase; font-size: .8em; }
+
+  .handout { display: none; }
+
+  /* ---------- print: the leave-behind ---------- */
+
+  @page { size: A4; margin: 14mm 13mm; }
+
+  @media print {
+    :root { --fg: #000; --dim: #222; --faint: #555; --line: #bbb; }
+    em { color: #000; font-style: italic; }
+    html, body { background: #fff; color: #000; font-size: 9.2pt; line-height: 1.42; }
+    body::before, .hud, #notes, #deck { display: none !important; }
+    .handout { display: block; }
+
+    .handout h1 { font-size: 22pt; margin: 0 0 .1em; letter-spacing: -.02em; }
+    .handout h2 {
+      font-size: 10pt; margin: 1.05em 0 .35em; letter-spacing: .16em; text-transform: uppercase;
+      border-bottom: 1px solid #000; padding-bottom: .2em;
+    }
+    .handout h3 { font-size: 9.2pt; margin: .5em 0 .15em; }
+    .handout p, .handout li { color: #222; max-width: none; }
+    .handout p { margin: 0 0 .5em; }
+    .handout ul { margin: 0 0 .5em; padding-left: 1.1em; }
+    .handout .sub { color: #444; font-size: 9.6pt; margin-bottom: .8em; }
+    .handout pre {
+      background: #f4f4f4; border: 1px solid #ccc; color: #000; padding: .5em .7em;
+      font-size: 8pt; margin: 0 0 .6em;
+    }
+    .handout code { background: #f4f4f4; border: 1px solid #ddd; color: #000; }
+    .handout table { font-size: 8.6pt; }
+    .handout td, .handout th { border-bottom: 1px solid #ccc; padding: .28em .7em .28em 0; color: #222; }
+    .handout th { color: #000; }
+    .handout .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.6em; }
+    .handout .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0 1.4em; }
+    .handout .box { border: 1px solid #999; padding: .5em .6em; margin-bottom: .5em; }
+    .handout .foot { margin-top: 1em; border-top: 1px solid #000; padding-top: .4em; font-size: 8pt; color: #444; }
+    .pagebreak { break-before: page; }
+    a { color: #000; text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+
+<main id="deck">
+
+  <!-- 1 ----------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="Set the frame in one breath, then get off this slide. The three-network split is the whole architecture and it fits in one sentence.">
+    <div class="kicker">ETHGlobal Lisbon 2026 &nbsp;·&nbsp; <b>36 hours, solo, built with Claude Code</b></div>
+    <h1>ASSAY</h1>
+    <p class="lede">A reputation and payment rail for agent-to-agent services.</p>
+    <div class="rule"></div>
+    <div class="cols">
+      <div class="card ens"><h3>ENS<span class="tag">business card</span></h3><p>who you are, what you sell, what you have been caught doing</p></div>
+      <div class="card hedera"><h3>Hedera<span class="tag">cash register</span></h3><p>pay per call, post a bond, get it slashed</p></div>
+      <div class="card graph"><h3>The Graph<span class="tag">the assay</span></h3><p>the chain decides who was telling the truth</p></div>
+    </div>
+    <p style="margin-top:1.4em">Reputation is <em>assayed</em> against on-chain data, not rated by people.</p>
+  </section>
+
+  <!-- 2 ----------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="Judges have seen a dozen agent payment demos today. The differentiator is not the payment, it is that trust here is falsifiable. Land the last line hard.">
+    <div class="kicker">the problem</div>
+    <h2>Agents have started paying other agents.<br>Nothing tells them who to trust.</h2>
+    <div class="cols">
+      <div class="card"><h3>Discovery</h3><p>How does an agent find one that offers the service it needs, without a hardcoded list?</p></div>
+      <div class="card"><h3>Trust before payment</h3><p>Is this stranger competent and honest? You have to decide <strong>before</strong> the money moves.</p></div>
+      <div class="card"><h3>Micro-payments</h3><p>Per-call, sub-second, cheap enough that a single API read is worth settling on chain.</p></div>
+    </div>
+    <div class="rule"></div>
+    <p class="lede">Star ratings do not fix trust. A rating is an opinion, and <strong>you cannot slash an opinion</strong>. We wanted reputation that reflects whether a result actually held up.</p>
+  </section>
+
+  <!-- 3 ----------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="Four beats. The one that matters is the fourth: the claim is a fact with a block number attached, so it is falsifiable by anyone, forever.">
+    <div class="kicker">the idea</div>
+    <h2>Make every claim falsifiable, then put money behind it</h2>
+    <div class="cols quad">
+      <div class="card ens">
+        <h3>1. A provider publishes</h3>
+        <p>Capability, price, endpoint and its own track record as <strong>ENS text records</strong>, plus a <strong>bond</strong> posted on chain. One name, one lookup.</p>
+      </div>
+      <div class="card ens">
+        <h3>2. A requester reads, then decides</h3>
+        <p>Resolves the name, reads the manifest and the reputation, and decides for itself whether the price is worth it. Nothing forces the decision either way.</p>
+      </div>
+      <div class="card hedera">
+        <h3>3. It pays per call</h3>
+        <p>Real HBAR on Hedera testnet. The transaction memo carries the request hash, so a payment is tied to the exact request it bought.</p>
+      </div>
+      <div class="card graph">
+        <h3>4. The result can be disproved</h3>
+        <p>The answer carries factual <strong>block-stamped claims</strong>. Anyone can challenge one. A verifier re-derives it from The Graph <strong>at that same block</strong>. If the provider lied: bond slashed, ENS reputation written down.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 ----------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="Point at the same-block property. Without it the verifier slashes honest providers every time the chain moves, which would make the whole rail worse than useless.">
+    <div class="kicker">the loop</div>
+    <h2>Three independent networks, no bridge</h2>
+    <div class="loop">
+      <div class="step ens"><div class="w">ENS</div><div class="t">discover</div></div>
+      <div class="arrow">→</div>
+      <div class="step ens"><div class="w">ENS</div><div class="t">read reputation</div></div>
+      <div class="arrow">→</div>
+      <div class="step hedera"><div class="w">Hedera</div><div class="t">pay</div></div>
+      <div class="arrow">→</div>
+      <div class="step graph"><div class="w">The Graph</div><div class="t">serve</div></div>
+    </div>
+    <div class="loop">
+      <div class="step"><div class="w">requester</div><div class="t">challenge</div></div>
+      <div class="arrow">→</div>
+      <div class="step graph"><div class="w">The Graph</div><div class="t">verify at the same block</div></div>
+      <div class="arrow">→</div>
+      <div class="step hedera"><div class="w">Hedera</div><div class="t">slash the bond</div></div>
+      <div class="arrow">→</div>
+      <div class="step ens"><div class="w">ENS</div><div class="t">reputation drops</div></div>
+    </div>
+    <div class="rule"></div>
+    <p class="lede">Claims are <strong>block-stamped</strong>, and the verifier queries that exact block. Query "now" instead and every honest provider gets slashed the moment the chain moves.</p>
+    <p>Coordinated off-chain by the Assay node, which is also the MCP server a live Claude agent drives on the requester side.</p>
+  </section>
+
+  <!-- 5 ----------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="This is the sponsor slide. For each one say the property, not the logo. The ENS wildcard line (zero transactions per provider) is the one that surprises people.">
+    <div class="kicker">the stack &nbsp;·&nbsp; why each network, not which</div>
+    <h2>Every network here is load-bearing</h2>
+    <div class="cols two">
+      <div class="card ens">
+        <h3>ENS<span class="tag">Sepolia · identity + reputation</span></h3>
+        <p>Two text records under a subname: <code>assay:manifest</code> (capability, price, endpoint, bond, a <code>verifierHash</code> committing to the verifier's own source) and <code>assay:rep</code> (score, jobs, slashes, bond).</p>
+        <p><strong>Why it is load-bearing:</strong> one human-readable name gets an agent the price and the track record in a single lookup, with no reputation service to trust. Subnames resolve through a <strong>wildcard resolver</strong>: one transaction to set up the parent, then <strong>zero transactions per provider onboarded</strong>.</p>
+      </div>
+      <div class="card hedera">
+        <h3>Hedera<span class="tag">testnet · pay, bond, slash</span></h3>
+        <p><code>pay(amount, requestHash)</code> writes the request hash into the transaction memo. The provider serves only after the <strong>mirror node</strong> confirms the transfer. <code>postBond</code> and <code>slash</code> move real HBAR on the same rail.</p>
+        <p><strong>Why it is load-bearing:</strong> the bond is what gives reputation teeth. Without a real transfer to lose, a score is just a number nobody has to back.</p>
+      </div>
+      <div class="card graph">
+        <h3>The Graph<span class="tag">mainnet · the source of truth</span></h3>
+        <p><code>getTokenSignals(token, atBlock)</code> runs block-pinned Uniswap v3 subgraph queries through the gateway: liquidity, age in blocks, transaction count, volume, top-pool concentration.</p>
+        <p><strong>Why it is load-bearing:</strong> it is not just the provider's input, it is what the <strong>verifier</strong> queries independently at the same block. A block outside the indexed range fails loudly instead of quietly returning live data.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 ----------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="Keep this short, it is an architecture sanity check, not the pitch. The point of ports and adapters here: a second capability plugs in without touching payments or registry.">
+    <div class="kicker">how it is built</div>
+    <h2>TypeScript monorepo, ports and adapters</h2>
+    <pre>
+packages/
+  <b>core</b>          the loop, the shared types, the ports. Knows nothing about rug-scores.
+  <b>registry</b>      ENS adapter (ethers, Sepolia): manifest + reputation text records
+  <b>payments</b>      Hedera adapter (@hashgraph/sdk): pay / bond / slash / mirror-node confirm
+  <b>graph</b>         The Graph adapter: block-pinned subgraph queries through the gateway
+  <b>cap-rugscore</b>  the one concrete capability: <b>run()</b> and, crucially, <b>verify()</b>
+apps/
+  <b>mcp</b>           the MCP server, nine tools. This is the product.
+  <b>provider</b>      the provider service: returns <b>402</b> until a payment is confirmed
+  <b>watchdog</b>      challenges a claim from the command line
+  <b>dashboard</b>     renders the loop, and replays a captured run with no network at all</pre>
+    <div class="cols">
+      <div class="card"><h3>Capability = run() + verify()</h3><p>A capability is only admissible on this rail if a third party can re-derive its claims. That constraint is the design.</p></div>
+      <div class="card"><h3>Adapters behind ports</h3><p><code>RegistryPort</code>, <code>PaymentsPort</code>, <code>GraphPort</code>. Swapping ENS for another registry does not touch the loop.</p></div>
+      <div class="card"><h3>MCP: the requester is a real agent</h3><p>Nine tools, driven by a live Claude Code session. The buyer is not a script with a delay in it.</p></div>
+    </div>
+  </section>
+
+  <!-- 7 ----------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="Why a rug-score and not something generic: it is expensive to compute and cheap to spot-check, which is exactly the shape a bonded-claim market needs. GOODCAT is a real token, not a fixture.">
+    <div class="kicker">the capability under test</div>
+    <h2>Rug-pull risk scoring for an ERC-20</h2>
+    <p class="lede">Chosen because it has the right shape for this rail: <strong>expensive to compute well, cheap to spot-check</strong>. Five signals, each stamped to a block.</p>
+    <table>
+      <tr><th>token</th><th>deepest pool liquidity</th><th>transactions</th><th>verdict</th></tr>
+      <tr><td class="k">USDC</td><td class="n">~$360,500,000</td><td class="n">36,500,000</td><td style="color:var(--ok)">low risk</td></tr>
+      <tr><td class="k">GOODCAT</td><td class="n">$57</td><td class="n">2</td><td style="color:var(--bad)">top of the risk scale</td></tr>
+    </table>
+    <p style="margin-top:1.2em">Both are real mainnet tokens read live. The score moves as the chain moves (age keeps advancing); the facts underneath it, <span class="mono">$57</span> and <span class="mono">2 transactions</span>, do not.</p>
+    <p>Ask for a block before the subgraph's indexed range and you get a refusal naming the minimum, not a silent substitution:</p>
+    <pre>bad query: requested block 1000, before minimum 'startBlock' of manifest 12369621</pre>
+  </section>
+
+  <!-- 8 ----------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="The second row is the slide. Anyone can build a verifier that always says guilty. Pause on the last line.">
+    <div class="kicker">it has run end to end, on live networks</div>
+    <h2>In both directions</h2>
+    <table>
+      <tr><th>provider</th><th>outcome</th><th>hedera</th><th>ens reputation</th></tr>
+      <tr>
+        <td class="k" style="color:var(--bad)">lying provider</td>
+        <td class="k">challenge upheld</td>
+        <td>bond slashed, real transfer</td>
+        <td class="n">56 → 26</td>
+      </tr>
+      <tr>
+        <td class="k" style="color:var(--ok)">honest provider</td>
+        <td class="k">challenge failed</td>
+        <td>no bond touched</td>
+        <td class="n">26 → 31</td>
+      </tr>
+    </table>
+    <div class="rule"></div>
+    <p class="big">A system that only ever confirms a lie proves nothing about its verifier.</p>
+  </section>
+
+  <!-- 9 ----------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="Numbers, measured, not marketing. The ENS spread matters more than the median: it is why the run sheet puts the closing narration over the write. If asked, the test suite runs offline with no credentials.">
+    <div class="kicker">measured, not estimated</div>
+    <h2>What it actually costs in seconds</h2>
+    <div class="cols" style="margin-bottom:1.6em">
+      <div class="stat"><div class="v">~4.1s</div><div class="l">Hedera payment, submit to mirror-node confirmed</div></div>
+      <div class="stat"><div class="v">~0.4s</div><div class="l">Hedera slash, transfer alone</div></div>
+      <div class="stat"><div class="v">8.3–24.6s</div><div class="l">ENS text-record write (median ~13s)</div></div>
+      <div class="stat"><div class="v">394</div><div class="l">tests, 9 packages, offline, no credentials</div></div>
+    </div>
+    <p class="lede">The ENS spread does not converge, and that is the number worth knowing. A demo script written against the median breaks on stage; ours puts the closing line <strong>over</strong> the write.</p>
+    <p>Every figure here came out of a rehearsal against live networks, so treat any "instant" claim about either chain, including ours, as something to time yourself.</p>
+  </section>
+
+  <!-- 10 ---------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="Do not rush this slide, it buys credibility for everything else. Volunteering the staged parts is what makes the real parts believable.">
+    <div class="kicker">real vs staged &nbsp;·&nbsp; stated up front</div>
+    <h2>What is real, what is staged, what is missing</h2>
+    <div class="cols">
+      <div class="card ok">
+        <h3 style="color:var(--ok)">Real, never faked</h3>
+        <p>Every Hedera value transfer (pay, bond, slash), signed and mirror-node confirmed. Every ENS read and write on Sepolia. Every Graph query, against live mainnet data. The verifier. The agent.</p>
+        <p>Value moves <strong>between two distinct accounts</strong>, which is what makes verifying an amount meaningful at all.</p>
+      </div>
+      <div class="card warn">
+        <h3 style="color:var(--warn)">Staged, and disclosed on screen</h3>
+        <p>The "lying provider" is <code>createLyingRugScoreProvider</code>, a declared test harness that runs the real capability and tampers with exactly one claim.</p>
+        <p>Everything downstream of it, the challenge, the verifier, the slash and the ENS write, is the same code a spontaneous challenge runs.</p>
+      </div>
+      <div class="card bad">
+        <h3 style="color:var(--bad)">Honest gaps</h3>
+        <p>A failed challenge should also cost the challenger a deposit; there is no escrow yet, so only the provider has skin in the game.</p>
+        <p>Settlement is not atomic across three networks, and the code does not pretend it is: status is recorded before the ENS write, so a failed write leaves a truthful status and a named error.</p>
+        <p>One provider, one capability, exercised end to end.</p>
+      </div>
+    </div>
+    <div class="rule"></div>
+    <p><strong>The lesson this build kept re-learning:</strong> unit tests pass on things the chain does not do. When the payment gate started checking the amount, the loop broke, because the mirror node reports a self-transfer as only the fee movement. Every test was green. Only the live run showed it. The fix was a second funded account, not a weaker check.</p>
+  </section>
+
+  <!-- 11 ---------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="Read the quote out loud. Nobody prompted the block-drift reasoning, and it is the project's own central argument arrived at independently by the thing it was built for.">
+    <div class="kicker">the part we could not have scripted</div>
+    <h2>The agent genuinely decides</h2>
+    <p class="lede">The demo prompt sets a goal and a budget. It <strong>never</strong> names the provider to distrust, the claim to check, or when to challenge. Same prompt, different providers, different outcomes it reached on its own: <span style="color:var(--bad)">DECLINED</span> against one carrying slashes, <span style="color:var(--ok)">PAID</span> against a clean one.</p>
+    <div class="quote">
+      "the two providers' claims were four blocks apart, so a naive side-by-side comparison of their outputs would have been unsound reasoning even though it happened to point at the right answer. What actually convicted the second provider was re-deriving at its own stamped block."
+    </div>
+    <p style="margin-top:1.2em">Nobody told it that comparing two providers' outputs would be unsound, or that block-stamping is what makes a verdict safe. It worked that out, flagged it rather than burying it, and noted the unsound route would have reached the right answer anyway.</p>
+    <p>Transcripts are committed in <code>apps/mcp/agent/transcripts/</code>.</p>
+  </section>
+
+  <!-- 12 ---------------------------------------------------------------- -->
+  <section class="slide"
+    data-notes="Hand over to the live run here. Say explicitly that there is no custom demo app on purpose, then start /assay-demo.">
+    <div class="kicker">now, live</div>
+    <h2>A real Claude Code session, driving the real loop</h2>
+    <p class="lede">There is no custom demo application, deliberately. Two were built and deleted, because <strong>a renderer we write is less credible than the tool the audience already uses</strong>. You are about to see the MCP badge, the real tool names, and the raw JSON that came back.</p>
+    <div class="cols two">
+      <div class="card">
+        <h3>What the agent will do, unprompted</h3>
+        <ul class="bare">
+          <li>list the providers and read every reputation signal, not just the headline score</li>
+          <li>decide who, if anyone, is worth paying</li>
+          <li>pay on Hedera and get back block-stamped claims</li>
+          <li>re-derive those claims against The Graph</li>
+          <li>challenge what does not hold up, and rate what does</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Check us afterwards, without our credentials</h3>
+        <ul class="bare">
+          <li><code>pnpm -r test</code>: the full suite, offline, no keys</li>
+          <li>any transaction id, on <span class="mono">hashscan.io/testnet</span>, memo decoded</li>
+          <li><code>assay:manifest</code> and <code>assay:rep</code> off any public Sepolia RPC</li>
+          <li>the manifest's <code>verifierHash</code> against <code>sha256sum</code> of the verifier source</li>
+        </ul>
+      </div>
+    </div>
+    <div class="rule"></div>
+    <p class="big" style="color:var(--graph);font-size:clamp(1.3rem,2.6vw,2.1rem)">Trust is not a score here. It is a bond, and something that can take it away.</p>
+  </section>
+
+</main>
+
+<div id="notes"></div>
+
+<div class="hud">
+  <div class="bar" id="bar"></div>
+  <span id="counter">01 / 12</span>
+  <span class="grow"></span>
+  <span><kbd>→</kbd> next</span>
+  <span><kbd>←</kbd> back</span>
+  <span><kbd>n</kbd> notes</span>
+  <span><kbd>f</kbd> full screen</span>
+  <span><kbd>p</kbd> print handout</span>
+</div>
+
+<!-- =====================================================================
+     Print-only leave-behind. Never shown on screen.
+     ===================================================================== -->
+<article class="handout">
+  <h1>Assay</h1>
+  <p class="sub">A reputation and payment rail for agent-to-agent services. ENS is the business card, Hedera is the cash register, and reputation is <em>assayed</em> against The Graph, not rated. Built at ETHGlobal Lisbon 2026.</p>
+
+  <h2>The problem</h2>
+  <p>Agents have started paying other agents, and three primitives are missing: discovery (who offers this service?), trust before payment (is this stranger honest?), and a cheap per-call rail. Star ratings do not solve trust, because a rating is an opinion and you cannot slash an opinion.</p>
+
+  <h2>The idea</h2>
+  <ul>
+    <li>A provider publishes its capability (what it does, price, endpoint) and its track record as <strong>ENS text records</strong>, and posts a <strong>bond</strong> on chain.</li>
+    <li>A requester resolves the name, reads the manifest and the reputation, and decides for itself whether to pay. Nothing forces the decision either way.</li>
+    <li>It pays <strong>per call on Hedera</strong>, with the request hash written into the transaction memo.</li>
+    <li>The result carries factual, <strong>block-stamped claims</strong>. Anyone can challenge one; a verifier re-derives it from <strong>The Graph at that same block</strong>. If the provider lied, its bond is slashed and its ENS reputation is written down.</li>
+  </ul>
+  <pre>discover (ENS) -&gt; read reputation (ENS) -&gt; pay (Hedera) -&gt; serve (The Graph)
+   -&gt; challenge -&gt; verifier re-derives from The Graph -&gt; slash (Hedera) + reputation write (ENS)</pre>
+
+  <h2>Why each network is load-bearing</h2>
+  <div class="grid3">
+    <div class="box">
+      <h3>ENS (Sepolia)</h3>
+      <p>Identity and portable reputation in two text records, <code>assay:manifest</code> and <code>assay:rep</code>. One lookup gets an agent the price and the slash history. A wildcard resolver means one transaction for the parent name and <strong>zero per provider onboarded</strong>.</p>
+    </div>
+    <div class="box">
+      <h3>Hedera (testnet)</h3>
+      <p>Pay, bond and slash as real signed transfers. The provider serves only after the mirror node confirms the payment. The bond is what gives reputation teeth: without a real transfer to lose, a score is a number nobody has to back.</p>
+    </div>
+    <div class="box">
+      <h3>The Graph (mainnet)</h3>
+      <p>Block-pinned Uniswap v3 subgraph queries. Not only the provider's input: the <strong>verifier</strong> queries the same block independently. Out-of-range blocks fail loudly rather than returning live data, which would slash honest providers on data drift.</p>
+    </div>
+  </div>
+
+  <h2>Architecture</h2>
+  <pre>packages/  core (loop, types, ports) · registry (ENS) · payments (Hedera) · graph · cap-rugscore
+apps/      mcp (the MCP server, nine tools) · provider (402 gate) · watchdog · dashboard (offline replay)</pre>
+  <p>TypeScript ESM monorepo, ports and adapters, no emit step. A capability is admissible on this rail only if it ships <code>run()</code> <em>and</em> <code>verify()</code>: claims a third party can re-derive. The requester side is a real Claude Code session driving the MCP server's nine tools (<code>list_providers</code>, <code>discover</code>, <code>pay_and_call</code>, <code>verify_claim</code>, <code>challenge</code>, <code>rate</code>, <code>get_job</code>, <code>list_jobs</code>, <code>register_provider</code>).</p>
+
+  <h2>What has actually run, on live networks</h2>
+  <table>
+    <tr><th>run</th><th>outcome</th><th>Hedera</th><th>ENS reputation</th></tr>
+    <tr><td>lying provider</td><td>challenge upheld</td><td>bond slashed</td><td>56 &rarr; 26</td></tr>
+    <tr><td>honest provider</td><td>challenge failed</td><td>no bond touched</td><td>26 &rarr; 31</td></tr>
+  </table>
+  <p>The second row is the one that matters: a system that only ever confirms a lie proves nothing about its verifier.</p>
+
+  <h2>Measured timings</h2>
+  <table>
+    <tr><td>Hedera payment, submit to mirror-node confirmed</td><td>~4.1s</td></tr>
+    <tr><td>Hedera slash, transfer alone</td><td>~0.4s</td></tr>
+    <tr><td>ENS text-record write, samples across two rehearsals</td><td>8.3s to 24.6s, median ~13s</td></tr>
+    <tr><td>Test suite, offline, no credentials</td><td><span>394</span> tests across 9 packages</td></tr>
+  </table>
+
+  <h2>Real, staged, and missing</h2>
+  <p><strong>Real, never faked.</strong> Every Hedera value transfer (pay, bond, slash), signed and mirror-node confirmed, between two distinct funded accounts. Every ENS read and write on Sepolia. Every Graph query against live mainnet data. The verifier's comparison logic. The MCP server and the agent that drives it.</p>
+  <p><strong>Staged, and disclosed on screen when it runs.</strong> The "lying provider" is <code>createLyingRugScoreProvider</code>, a declared test harness that runs the real capability and alters exactly one claim. The watchdog's timing is scripted; the challenge, the verifier, the slash and the ENS write it triggers are real.</p>
+  <p><strong>Honest gaps.</strong> A failed challenge should cost the challenger a deposit too, and there is no escrow yet. Settlement is not atomic across three networks and the code does not pretend it is: status is recorded before the ENS write, so a failed write leaves a truthful status and a named error. One provider and one capability have been exercised end to end.</p>
+
+  <h2>Check it yourself, without our credentials</h2>
+  <ul>
+    <li><code>pnpm -r typecheck &amp;&amp; pnpm -r test</code> runs the whole suite with no network and no keys.</li>
+    <li>Open any cited transaction on <code>hashscan.io/testnet</code> and decode the memo: it is the request hash the provider was paid to serve.</li>
+    <li>Read <code>assay:manifest</code> and <code>assay:rep</code> for <code>rugscore.assay.eth</code> off any public Sepolia RPC, and compare the manifest's <code>verifierHash</code> against <code>sha256sum</code> of the verifier's two source files. Exact commands are in <code>TESTING.md</code>.</li>
+  </ul>
+
+  <div class="foot">
+    The live demo is a real Claude Code session driving the MCP server (<code>/assay-demo</code>). There is no custom demo application, deliberately: a renderer we write is less credible than the tool the audience already uses. Prize tracks: Hedera (AI &amp; Agentic Payments), The Graph (Best AI Use Case), ENS (Best Integration for AI Agents).
+  </div>
+</article>
+
+<script>
+(function () {
+  var slides  = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var notesEl = document.getElementById('notes');
+  var counter = document.getElementById('counter');
+  var bar     = document.getElementById('bar');
+  var notesOn = false;
+  var i = 0;
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+  // Wrap each slide's content so it can be scaled as a unit.
+  slides.forEach(function (s) {
+    var box = document.createElement('div');
+    box.className = 'fit';
+    while (s.firstChild) box.appendChild(s.firstChild);
+    s.appendChild(box);
+  });
+
+  // Shrink a slide's content to the viewport if it would overflow. Only ever
+  // down: whatever projector we get, nothing is clipped and nothing is blown up.
+  function fit(slide) {
+    var box = slide.firstElementChild;
+    if (!box) return;
+    box.style.transform = '';
+    var avail = slide.clientHeight
+      - parseFloat(getComputedStyle(slide).paddingTop)
+      - parseFloat(getComputedStyle(slide).paddingBottom);
+    var h = box.scrollHeight;
+    if (h > avail && avail > 0) box.style.transform = 'scale(' + (avail / h).toFixed(4) + ')';
+  }
+
+  var resizeTimer;
+  window.addEventListener('resize', function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () { fit(slides[i]); }, 80);
+  });
+
+  function show(next, push) {
+    i = Math.max(0, Math.min(slides.length - 1, next));
+    slides.forEach(function (s, k) { s.classList.toggle('on', k === i); });
+    counter.textContent = pad(i + 1) + ' / ' + pad(slides.length);
+    bar.style.width = ((i + 1) / slides.length * 100) + '%';
+    notesEl.innerHTML = '<b>speaker note</b><br>' + (slides[i].dataset.notes || '');
+    fit(slides[i]);
+    if (push !== false) {
+      var h = '#' + (i + 1);
+      if (location.hash !== h) history.replaceState(null, '', h);
+    }
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    switch (e.key) {
+      case 'ArrowRight': case 'ArrowDown': case ' ': case 'PageDown': case 'Enter':
+        show(i + 1); e.preventDefault(); break;
+      case 'ArrowLeft': case 'ArrowUp': case 'PageUp': case 'Backspace':
+        show(i - 1); e.preventDefault(); break;
+      case 'Home': show(0); e.preventDefault(); break;
+      case 'End':  show(slides.length - 1); e.preventDefault(); break;
+      case 'n': case 'N':
+        notesOn = !notesOn; notesEl.classList.toggle('on', notesOn); break;
+      case 'f': case 'F':
+        if (document.fullscreenElement) document.exitFullscreen();
+        else document.documentElement.requestFullscreen();
+        break;
+      case 'p': case 'P':
+        window.print(); break;
+      default:
+        if (e.key >= '1' && e.key <= '9') show(parseInt(e.key, 10) - 1);
+    }
+  });
+
+  // click / tap: right half advances, left half goes back
+  document.addEventListener('click', function (e) {
+    if (e.target.closest('a, .hud, #notes')) return;
+    show(e.clientX > window.innerWidth * 0.35 ? i + 1 : i - 1);
+  });
+
+  window.addEventListener('hashchange', function () {
+    var n = parseInt(location.hash.slice(1), 10);
+    if (!isNaN(n)) show(n - 1, false);
+  });
+
+  var start = parseInt(location.hash.slice(1), 10);
+  show(isNaN(start) ? 0 : start - 1, false);
+})();
+</script>
+</body>
+</html>

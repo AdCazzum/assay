@@ -71,6 +71,11 @@ server, so a real session drives the real loop and renders its own reasoning and
 claude               # then /assay-demo
 ```
 
+Before the live run, `docs/pitch/index.html` is the two-minute explainer for the people
+watching: what this is, what each network is doing and why. One self-contained file, no
+build and no network, and printing it gives a two-page handout. See
+[`docs/pitch/README.md`](docs/pitch/README.md).
+
 There is no custom demo application, deliberately. Two earlier attempts were built and
 deleted, and the reason is worth stating: **a renderer we write is less credible than the tool
 the audience already uses.** A judge cannot verify that our screen showed them the truth. In
